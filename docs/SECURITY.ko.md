@@ -80,10 +80,10 @@
 | IR 해석기 (Python Backend) | **아니다** | `eval`/`exec`/`compile` 없음, 속성 화이트리스트, 실행 상한이 있지만 같은 파이썬 프로세스 안이다. **신뢰할 수 없는 코드를 운영에서 실행하는 샌드박스로 주장하지 않는다** |
 | `/healthz` `/readyz` | 공개 (프로브용) | 상태 문자열만 반환. `/metrics` 는 기본 비공개 (위 표) |
 | 격리 워커 (`std.worker`) | 부분적 | 별도 프로세스 + 루프백 고정 주소 + 응답 타입 검증. 같은 파드/네트워크 네임스페이스라 **침해된 워커를 루프백이 막아주지는 않는다** → 워커 자체 하드닝(비루트, 읽기전용, drop ALL)과 별도 이그레스 정책 필요 |
-| 컨테이너/K8s (`sori k8s`) | 그렇다 (운영자 설정 전제) | 비루트, 읽기전용 루트FS, capabilities drop ALL, seccomp, SA 토큰 미마운트, 권한 기반 NetworkPolicy. 커널·런타임 취약점과 운영자 재설정은 통제 밖 |
+| 컨테이너/K8s (`sori k8s`) | 그렇다 (운영자 설정 전제) | 비루트, 읽기전용 루트FS, capabilities drop ALL, seccomp, SA 토큰 미마운트, NetworkPolicy(인그레스는 앱 포트, 이그레스는 클러스터 DNS 만). 표준 NetworkPolicy 는 도메인 단위 허용을 못 하므로 `net` 권한의 외부 이그레스는 `--egress cilium`(CiliumNetworkPolicy toFQDNs) 또는 egress gateway 가 있어야 열린다. 커널·런타임 취약점과 운영자 재설정은 통제 밖 |
 | `use py` (같은 프로세스 파이썬) | 아니다 | **개발 전용.** `[dev] in_process_python = true` 가 있어야 컴파일되고, `SORI_ENV=production` 이면 기동 거부 |
 
-### 구현·테스트된 통제 (로컬 112 tests)
+### 구현·테스트된 통제 (로컬 119 tests)
 
 | 위협 | 통제 | 테스트 |
 |---|---|---|
@@ -99,6 +99,8 @@
 | 배포 리소스 변조 | `sori.lock` 이 이미지에 들어가는 파일 전부(.sori, sori.toml, 워커 파일, static, fs_read)를 해시. 해시 안 된 파일은 이미지에 없음 | `test_lock_covers_static_and_fs_read_files`, `test_context_contains_whole_package_and_hashed_files_only` |
 | 내부 지표 노출 | `/metrics` 기본 비공개: `SORI_METRICS_TOKEN` Bearer(상수 시간 비교) 없으면 401, 토큰 미설정이면 404. 공개는 `[security] metrics = "public"` 명시 | `MetricsPolicy`, `test_metrics_are_private_by_default` |
 | 메모리 고갈 | 반복 연산·`range` 결과 크기 상한 1천만 (catch 불가) | `test_huge_range_is_refused_and_uncatchable` |
+| 생성물 주입 (Dockerfile 셸·YAML) | sori.toml 의 경로·이름·호스트·패키지 값은 안전 문자 집합만 허용 (E204). 생성기 진입 시 재검사(API 우회 차단), Dockerfile 의 쓰기 디렉터리 생성은 셸 없는 exec 형식, YAML 값은 따옴표 처리 | `ConfigInjection` (악성 값 11종, 생성기 우회, exec 형식, YAML 왕복), CI 에서 악성 설정 거부 + 실제 docker build |
+| 과도한 이그레스 | 표준 NetworkPolicy 에 대상 없는 허용 규칙을 넣지 않음 (DNS 만). Cilium 모드는 선언한 호스트:포트만 | `K8sEgress` 3건, CI `k8s-egress`: kind 클러스터에서 외부 443 차단·DNS 허용·대조 파드 접속을 실측 |
 | 공급망 | 런타임 의존성 0 (uvicorn 은 선택), Rust 슬라이스 의존성 0, `sori.lock` 소스 해시 | (정적) |
 
 ### 아직 검증하지 않은 영역 (프로덕션 게이트 추가 항목)

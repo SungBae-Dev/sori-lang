@@ -25,7 +25,7 @@ python -m sori k8s examples/secure-api       # manifests: permissions → Networ
 python -m sori migrate examples/hello.sori   # v0.1 DSL → v0.3 syntax + report
 ```
 
-**What works (local tests, 112 passing):**
+**What works (local tests, 119 passing):**
 
 - variables, functions, lambdas, loops, records, Korean identifiers
 - every route requires an access policy: `public` / `guard bearer` / user guard
@@ -38,6 +38,8 @@ python -m sori migrate examples/hello.sori   # v0.1 DSL → v0.3 syntax + report
 - AI tool schemas, periodic tasks
 - fail-closed production startup (`SORI_ENV=production`): lock required, no bypass switch, uvicorn only
 - `/metrics` private by default (`SORI_METRICS_TOKEN` bearer), lock covers static/fs_read files
+- sori.toml values that end up in Dockerfile/YAML are validated (E204), Dockerfile uses exec-form `RUN`
+- `sori k8s`: NetworkPolicy egress is cluster DNS only; FQDN egress only via `--egress cilium` (verified on a kind cluster in CI)
 - v0.1 → v0.3 migration verified on 23 requests
 - Python/Rust backend parity on 20 test vectors
 

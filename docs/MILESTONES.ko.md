@@ -6,7 +6,7 @@
 |---|---|---|---|
 | A0 | DSL/ASGI API, worker, 컨테이너 샘플 | 기본 동작 및 보안 테스트 | 완료(v0.1) |
 | B1 | typed IR, 정적 타입 검사, OpenAPI, 개발 CLI | 유효/악성 샘플 테스트·CI 및 산출물 검증 | 코드 구현/로컬 29 tests 통과 (PR 검토 대상) |
-| B1.5 | Ara 통합: IR 중심 범용 코어 (0.3.0a1) | Ara 프런트엔드 + Typed IR v2 + exec 없는 Python Backend, B1 29 tests 무수정 통과, 보안 회귀·마이그레이션 동등성·백엔드 동등성 테스트, CI | 코드 구현, PR #3 리뷰 반영(P1 2건·P2 2건·/metrics) + Python Backend 클로저 변환(CPU 4.5~7.7배 개선) — 로컬 112 tests, 재리뷰 대기, 미병합 |
+| B1.5 | Ara 통합: IR 중심 범용 코어 (0.3.0a1) | Ara 프런트엔드 + Typed IR v2 + exec 없는 Python Backend, B1 29 tests 무수정 통과, 보안 회귀·마이그레이션 동등성·백엔드 동등성 테스트, CI | 코드 구현, PR #3 리뷰 1·2차 반영(1차 P1 2·P2 2·/metrics, 2차 P1 Dockerfile 주입·P2 이그레스) + Python Backend 클로저 변환 — 로컬 119 tests, 재리뷰 대기, 미병합 |
 | B2 | Rust runtime proof of concept | ~~v1~~ **v2** IR 일부를 Rust에서 파싱/실행, 동등성 테스트, 벤치마크 | 수직 슬라이스 구현(실험): 벡터 20건 Python 과 일치. 벤치마크·서버화 미착수 — `docs/B2_RUST_PLAN.ko.md` |
 | B3 | LSP, formatter, effects/permission 분석 | 문법 에러 위치, 권한 진단, IDE 테스트 | 부분: effect/권한 분석 기초·JSON 진단(줄·열·힌트)은 B1.5 에 포함. LSP·formatter 미착수 |
 | B4 | SBOM, 잠금, SCA, fuzz/CI 보안 | 재현 가능 빌드, 의존성 정책, 퍼징 크래시 0 | 미착수 |
