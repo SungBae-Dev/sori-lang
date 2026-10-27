@@ -1,0 +1,42 @@
+# 백엔드 공통 테스트 벡터 — Python Backend 와 Rust Backend 가 같은 결과를 내야 한다.
+let VERSION = "v0.3"
+let BONUS = 10
+
+type AddIn:
+    a: Int(-1000, 1000)
+    b: Int(-1000, 1000)
+
+type GreetIn:
+    name: Str(1, 20)
+    loud: Bool = false
+
+type Scores:
+    values: List[Int(0, 100)](1, 20)
+
+route GET "/health" public:
+    return {status: "ok", version: VERSION}
+
+route POST "/add" (body: AddIn) guard bearer:
+    let total = body.a + body.b
+    var label = "small"
+    if total > 100:
+        label = "big"
+    elif total < 0:
+        label = "negative"
+    return {result: total, bonus: total + BONUS, label: label, half: total / 2, ok: total >= 0 and total != 7}
+
+route POST "/greet" (body: GreetIn) public:
+    let base = "안녕하세요, {body.name}"
+    return {message: base + "!" if body.loud else base, length: len(body.name)}
+
+route POST "/stats" (body: Scores) public:
+    var sum = 0
+    var top = 0
+    for v in body.values:
+        sum += v
+        if v > top:
+            top = v
+    return {count: len(body.values), sum: sum, top: top, mean: sum / len(body.values), first: body.values[0]}
+
+route GET "/locked" public:
+    return {nested: {list: [1, 2.5, "x", true, none]}, neg: -3, mod: 7 % 3, floor: 7 // 2}

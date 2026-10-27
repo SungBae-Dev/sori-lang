@@ -1,0 +1,14 @@
+[package]
+name = "sori-rt"
+version = "0.0.1"
+edition = "2021"
+description = "SORI Typed IR v2 interpreter — Phase B2 vertical slice (experimental, not production)"
+license = "Apache-2.0"
+publish = false
+
+# 의도적으로 외부 의존성 0개: 공급망 공격면 최소화. JSON 파서도 엄격 정책(중복 키·NaN 거부)을 위해 직접 구현.
+[dependencies]
+
+[profile.release]
+panic = "abort"
+overflow-checks = true

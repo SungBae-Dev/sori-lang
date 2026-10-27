@@ -6,8 +6,10 @@
 |---|---|---|---|
 | A0 | DSL/ASGI API, worker, 컨테이너 샘플 | 기본 동작 및 보안 테스트 | 완료(v0.1) |
 | B1 | typed IR, 정적 타입 검사, OpenAPI, 개발 CLI | 유효/악성 샘플 테스트·CI 및 산출물 검증 | 코드 구현/로컬 29 tests 통과 (PR 검토 대상) |
-| B2 | Rust runtime proof of concept | v1 IR 일부를 Rust에서 파싱/실행, 동등성 테스트, 벤치마크 | 미착수 |
-| B3 | LSP, formatter, effects/permission 분석 | 문법 에러 위치, 권한 진단, IDE 테스트 | 미착수 |
+| B1.5 | Ara 통합: IR 중심 범용 코어 (0.3.0a1) | Ara 프런트엔드 + Typed IR v2 + exec 없는 Python Backend, B1 29 tests 무수정 통과, 보안 회귀·마이그레이션 동등성·백엔드 동등성 테스트, CI | 코드 구현, PR #3 리뷰 1·2차 반영(1차 P1 2·P2 2·/metrics, 2차 P1 Dockerfile 주입·P2 이그레스, 3차 P2 파일 권한 상대경로) + Python Backend 클로저 변환 — 로컬 121 tests, **ADR 0001 승인·호환성 변화 수용(2026-10-27)**, 병합 전 |
+| B1.9 | 0.3 베타 진입 게이트 (알파에서 조건부 제외한 항목, ADR 0001 §6.1) | ① 퍼징: 대상·corpus·시간·횟수를 CI 에 기록하고 재현 가능한 미해결 크래시 0. ② 이미지 SCA: Critical/High 0, 예외는 CVE·영향·완화책·책임자·만료일 기록. ③ 실제 Cilium E2E: 허용 host:port 성공, 미선언 목적지·포트 차단, DNS·와일드카드. ④ 외부 감사는 첫 프로덕션 투입과 v1.0 중 이른 시점 이전 | 미착수 |
+| B2 | Rust runtime proof of concept | ~~v1~~ **v2** IR 일부를 Rust에서 파싱/실행, 동등성 테스트, 벤치마크 | 수직 슬라이스 구현(실험): 벡터 20건 Python 과 일치. 벤치마크·서버화 미착수 — `docs/B2_RUST_PLAN.ko.md`. **다음 초점: Python Backend 와의 기능 동등성 확대와 성능 실측** |
+| B3 | LSP, formatter, effects/permission 분석 | 문법 에러 위치, 권한 진단, IDE 테스트 | 부분: effect/권한 분석 기초·JSON 진단(줄·열·힌트)은 B1.5 에 포함. LSP·formatter 미착수 |
 | B4 | SBOM, 잠금, SCA, fuzz/CI 보안 | 재현 가능 빌드, 의존성 정책, 퍼징 크래시 0 | 미착수 |
 | B5 | API 비교/고객 인터뷰 | FastAPI/Go/Spring 동일 시나리오 지표 및 3 고객 인터뷰 | 미착수 |
 | C | 유료 파일럿, RBAC/ABAC, 감사 로그, IPC 격리 | 실제 사용자 검증, 외부 감사 및 계약 | 미착수 |

@@ -8,3 +8,11 @@ dist/
 .env.*
 !.env.example
 .pytest_cache/
+
+# SORI v0.3
+.sori/
+.sori-build/
+.sori-build-*/
+examples/*/data/
+runtime-rs/target/
+SORI_CONTEXT.md

@@ -1,4 +1,4 @@
-name: SORI compiler and API checks
+name: SORI compiler, backends and security checks
 on:
   push:
   pull_request:
@@ -7,21 +7,166 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install optional test dependencies (ASGI server, YAML parser)
+        run: python -m pip install 'uvicorn>=0.34,<1' 'pyyaml>=6,<7'
+      - name: Build Rust backend slice (runtime-rs, std-only)
+        run: cargo build --release --locked --manifest-path runtime-rs/Cargo.toml
+      - name: Run all tests (B1 legacy + unified core + security regression + backend parity)
+        env:
+          SORI_RT_BIN: runtime-rs/target/release/sori-rt
+        run: python -m unittest discover -s tests -v
+      - name: B1 compatibility — validate v0.1 example and artifacts
+        run: |
+          python -m sori check examples/hello.sori
+          python -m sori build examples/hello.sori --out .sori-build-legacy
+          for f in typed-ir openapi manifest; do python -m json.tool .sori-build-legacy/$f.json > /dev/null; done
+      - name: Unified core — check, test and spec-build examples
+        env:
+          ADMIN_KEY: ci-admin-key
+        run: |
+          for ex in todo robot secure-api; do
+            python -m sori check examples/$ex
+            python -m sori test examples/$ex
+            python -m sori build examples/$ex --target spec --out .sori-build/$ex
+            for f in typed-ir openapi manifest tools; do python -m json.tool .sori-build/$ex/$f.json > /dev/null; done
+          done
+      - name: Migration smoke test (v0.1 → v0.3)
+        run: |
+          python -m sori migrate examples/hello.sori --out /tmp/hello-v03
+          python -m sori check /tmp/hello-v03
+      - name: Guard — no dynamic code execution in runtime paths (precise AST check is in tests)
+        run: |
+          if grep -rnE '(^|[^.A-Za-z_])(eval|exec|compile)\(' sori/ --include=*.py | grep -vE ':[0-9]+:\s*def (eval|exec|compile)\('; then
+            echo "dynamic execution call found"; exit 1
+          fi
+      - name: Check Python compilation
+        run: python -m compileall -q sori tests edge
+
+  oci-image:
+    # 생성된 OCI 빌드 컨텍스트로 실제 이미지를 빌드하고, 운영과 같은 제약(읽기전용 루트FS, cap drop ALL,
+    # no-new-privileges, 비루트)으로 띄워서 응답을 확인한다.
+    runs-on: ubuntu-latest
+    needs: test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Test compiler, typed IR, OpenAPI and runtime
-        run: python -m unittest discover -s tests -v
-      - name: Validate example SORI program
-        run: python -m sori check examples/hello.sori
-      - name: Generate typed artifacts
-        run: python -m sori build examples/hello.sori --out .sori-build
-      - name: Validate machine-readable artifacts
+      - name: Install uvicorn (pinned into the image requirements)
+        run: python -m pip install 'uvicorn>=0.34,<1'
+      - name: Generate OCI build contexts
         run: |
-          python -m json.tool .sori-build/typed-ir.json > /dev/null
-          python -m json.tool .sori-build/openapi.json > /dev/null
-          python -m json.tool .sori-build/manifest.json > /dev/null
-      - name: Check Python compilation
-        run: python -m compileall -q sori tests edge
+          python -m sori build examples/todo --target oci --out /tmp/oci-todo
+          python -m sori build examples/secure-api --target oci --out /tmp/oci-secure
+      - name: docker build
+        run: |
+          docker build -t sori-todo:ci /tmp/oci-todo
+          docker build -t sori-secure:ci /tmp/oci-secure
+          test "$(docker inspect -f '{{.Config.User}}' sori-todo:ci)" = "10001:10001"
+      - name: Run hardened containers and probe
+        run: |
+          set -euo pipefail
+          HARDEN="--read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges"
+          docker run -d --name todo $HARDEN --tmpfs /app/data:rw,uid=10001,gid=10001 -p 127.0.0.1:18080:8080 sori-todo:ci
+          TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(40))')"
+          docker run -d --name secure $HARDEN -e SORI_API_TOKEN="$TOKEN" -p 127.0.0.1:18000:8000 sori-secure:ci
+          for port in 18080 18000; do
+            for i in $(seq 1 40); do curl -fsS "http://127.0.0.1:$port/healthz" && break; sleep 0.5; done
+          done
+          curl -fsS http://127.0.0.1:18080/api/todos | python -m json.tool
+          curl -fsS http://127.0.0.1:18080/static/app.css > /dev/null
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/metrics)" = "404"
+          curl -fsS http://127.0.0.1:18000/health | python -m json.tool
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"ci"}' http://127.0.0.1:18000/greet)" = "401"
+          curl -fsS -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
+            -d '{"name":"ci"}' http://127.0.0.1:18000/greet | grep -q '안녕하세요, ci'
+      - name: Malicious sori.toml is refused before any Dockerfile exists; exec-form RUN works in real docker
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/evil /tmp/okpath
+          printf '[permissions]\nfs_write = ["data; touch /tmp/sori-pwned #"]\n' > /tmp/evil/sori.toml
+          printf 'route GET "/" public:\n    return "ok"\n' > /tmp/evil/app.sori
+          if python -m sori build /tmp/evil --target oci --out /tmp/evil/ctx; then echo "malicious config was accepted"; exit 1; fi
+          test ! -e /tmp/evil/ctx/Dockerfile
+          printf '[permissions]\nfs_write = ["./data-1/sub.dir"]\n' > /tmp/okpath/sori.toml
+          cp /tmp/evil/app.sori /tmp/okpath/app.sori
+          python -m sori build /tmp/okpath --target oci --out /tmp/okpath/ctx
+          grep -F 'RUN ["mkdir", "-p", "/app/data-1/sub.dir"]' /tmp/okpath/ctx/Dockerfile
+          docker build -t sori-okpath:ci /tmp/okpath/ctx
+          test "$(docker run --rm --entrypoint stat sori-okpath:ci -c %u /app/data-1/sub.dir)" = "10001"
+      - name: Container logs on failure
+        if: failure()
+        run: |
+          docker logs todo || true
+          docker logs secure || true
+
+  k8s-egress:
+    # 실제 클러스터에서 생성된 NetworkPolicy 가 선언하지 않은 외부 목적지로의 이그레스를 막는지 확인한다.
+    # kind 기본 CNI(kindnet)는 v0.24 부터 kube-network-policies 로 NetworkPolicy 를 집행한다.
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install uvicorn (pinned into the image requirements)
+        run: python -m pip install 'uvicorn>=0.34,<1'
+      - name: Install kind
+        run: |
+          curl -fsSLo /tmp/kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          kind version
+          kubectl version --client
+      - name: Create cluster
+        run: kind create cluster --name sori --wait 180s
+      - name: Build and load image
+        run: |
+          python -m sori build examples/todo --target oci --out /tmp/oci-todo
+          docker build -t sori-todo:ci /tmp/oci-todo
+          kind load docker-image sori-todo:ci --name sori
+      - name: Deploy generated manifests (default egress = DNS only)
+        run: |
+          python -m sori k8s examples/todo --image sori-todo:ci --replicas 1 > /tmp/todo.yaml
+          cat /tmp/todo.yaml
+          kubectl apply -f /tmp/todo.yaml
+          kubectl rollout status deploy/sori-todo --timeout=180s
+      - name: App works through the policy (port-forward)
+        run: |
+          kubectl port-forward deploy/sori-todo 18080:8080 > /tmp/pf.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18080/api/todos
+      - name: Egress — DNS allowed, undeclared external destinations blocked, control pod not blocked
+        run: |
+          set -euo pipefail
+          POD=$(kubectl get pod -l app=sori-todo -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec "$POD" -c app -- python -c "import socket; print('dns ok', socket.gethostbyname('kubernetes.default.svc.cluster.local'))"
+          kubectl exec "$POD" -c app -- python -c "
+          import socket, sys
+          for host in ('1.1.1.1', '8.8.8.8'):
+              try:
+                  socket.create_connection((host, 443), timeout=5).close()
+                  print('OPEN (policy not enforced)', host); sys.exit(1)
+              except OSError as e:
+                  print('blocked', host, type(e).__name__)
+          "
+          kubectl run egress-control --image=sori-todo:ci --image-pull-policy=IfNotPresent --restart=Never \
+            --command -- python -c "import socket; socket.create_connection(('1.1.1.1', 443), timeout=10).close(); print('control reached 1.1.1.1:443')"
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/egress-control --timeout=120s
+          kubectl logs egress-control
+      - name: Cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl describe deploy/sori-todo || true
+          kubectl logs -l app=sori-todo -c app --tail=100 || true
+          kubectl logs egress-control || true

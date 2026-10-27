@@ -106,3 +106,34 @@ ROS2 공식 문서는 Python 클라이언트 `rclpy`를 제공한다: https://do
 - `sori/openapi.py`: 라우트 접근 정책과 입력 범위에 맞는 OpenAPI 3.1 사양 작성. 워커 응답은 알 수 없는 객체로 기술.
 - `sori/__main__.py`: `sori new`, `dev`, `test`, `ir`, `openapi`, `build` 추가. 현재 build는 JSON 개발 아티팩트를 만드는 명령으로 실행 바이너리를 생성하지 않음.
 - Rust 구현 및 네이티브 IR 실행기는 향후 별도 마일스톤.
+
+## v0.3.0a1 — 통합 코어 (Ara 프런트엔드 + Typed IR v2)
+
+```text
+             .sori (통합 문법)                       .sori (v0.1 DSL, app "...")
+                   │                                         │
+   sori/lang: lexer → parser → AST                    sori/compiler.py (B1, 무수정)
+                   │                                         │
+   정적 검사 (sori/lang/compiler.py)                   typed IR v1 / OpenAPI(B1) / runtime.py
+   스코프·불변성·정적 타입·권한·effect·라우트 정책·HTML 문맥
+                   │
+         Typed IR v2 (sori/lang/ir.py, docs/ir-v2.schema.json)
+                   │
+       ┌───────────┴──────────────┐
+ Python Backend                Rust Backend (B2 슬라이스)
+ sori/framework/interp.py      runtime-rs/ (std 전용, 미지원 IR → 501)
+ (로드 시 IR→클로저 조립, exec 없음)
+       │
+ sori/framework: web(내장 dev 서버) · asgi(uvicorn) · stdlib(db/http/fs/env/ai/worker/…) · core(타입·Secret·sql/html)
+       │
+ sori/tools: openapi_v2 · deploy(spec/oci/k8s/compose/context/audit) · migrate(v0.1→v0.3)
+```
+
+- 결정 기록: `docs/adr/0001-unified-core.ko.md`
+- 중복·충돌 분석: `docs/INTEGRATION_ANALYSIS.ko.md`
+- IR 명세: `docs/IR_SPEC.ko.md` (v2 절)
+- 마이그레이션: `docs/MIGRATION-0.3.ko.md`
+- Rust 계획: `docs/B2_RUST_PLAN.ko.md`
+- 언어 요약: `docs/LANGUAGE.ko.md`
+
+피지컬 AI 에서 SORI 의 역할은 §6 의 계층 구분을 그대로 따른다. **고수준 작업 오케스트레이션·정책 검사·텔레메트리**가 SORI 의 역할이다. 긴급 정지·안전 인터록·결정적 실시간 제어는 LLM 이나 일반 파이썬 워커에 위임하지 않는다. `task every N ms` 는 소프트 실시간 감시용이며 지터·마감 초과를 `/metrics` 로 보고한다.

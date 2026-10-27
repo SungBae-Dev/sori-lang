@@ -1,0 +1,228 @@
+{
+  "$defs": {
+    "expr": {
+      "properties": {
+        "op": {
+          "enum": [
+            "binop",
+            "call",
+            "cat",
+            "compare",
+            "cond",
+            "field",
+            "html",
+            "index",
+            "lambda",
+            "list",
+            "lit",
+            "logic",
+            "map",
+            "not",
+            "slice",
+            "sql",
+            "std",
+            "unop",
+            "var"
+          ]
+        },
+        "t": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "t",
+        "at"
+      ],
+      "type": "object"
+    },
+    "route": {
+      "properties": {
+        "access": {
+          "properties": {
+            "kind": {
+              "enum": [
+                "bearer",
+                "deny",
+                "guard",
+                "public"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "effects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ]
+        }
+      },
+      "required": [
+        "method",
+        "path",
+        "params",
+        "access",
+        "body",
+        "effects",
+        "returns",
+        "at"
+      ],
+      "type": "object"
+    },
+    "stmt": {
+      "properties": {
+        "op": {
+          "enum": [
+            "assign",
+            "break",
+            "continue",
+            "expr",
+            "for",
+            "if",
+            "let",
+            "pass",
+            "return",
+            "try",
+            "while"
+          ]
+        }
+      },
+      "required": [
+        "op",
+        "at"
+      ],
+      "type": "object"
+    },
+    "type": {
+      "properties": {
+        "k": {
+          "enum": [
+            "Any",
+            "Bool",
+            "Float",
+            "Html",
+            "Int",
+            "Json",
+            "List",
+            "Map",
+            "Opt",
+            "Ref",
+            "Secret",
+            "Str"
+          ]
+        }
+      },
+      "required": [
+        "k"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/SungBae-Dev/sori-lang/docs/ir-v2.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "app": {
+      "type": "string"
+    },
+    "files": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "functions": {
+      "type": "array"
+    },
+    "guards": {
+      "type": "array"
+    },
+    "init": {
+      "items": {
+        "$ref": "#/$defs/stmt"
+      },
+      "type": "array"
+    },
+    "ir_version": {
+      "const": "sori/ir/v2"
+    },
+    "permissions": {
+      "type": "object"
+    },
+    "routes": {
+      "items": {
+        "$ref": "#/$defs/route"
+      },
+      "type": "array"
+    },
+    "source_digest": {
+      "additionalProperties": {
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "tasks": {
+      "type": "array"
+    },
+    "tests": {
+      "type": "array"
+    },
+    "types": {
+      "type": "array"
+    },
+    "uses": {
+      "type": "array"
+    },
+    "workers": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "timeout_ms"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "app",
+    "files",
+    "functions",
+    "guards",
+    "init",
+    "ir_version",
+    "permissions",
+    "routes",
+    "source_digest",
+    "tasks",
+    "tests",
+    "types",
+    "uses",
+    "workers"
+  ],
+  "title": "SORI Typed IR v2",
+  "type": "object"
+}

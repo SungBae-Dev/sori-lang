@@ -65,3 +65,61 @@
 - Typed IR JSON은 원본 코드를 실행하지 않으나, 독립적인 샌드박스나 실행 엔진 자체가 아님.
 - 기존 v0.1에서 public worker 호출을 쓰던 코드는 v0.2에서 컴파일 실패함(고의적인 강화).
 - 입력 인증 외에 Rate limiting, tenant isolation, audit logging, dependency SCA 및 운영 비밀키 관리는 구현되지 않음.
+
+---
+
+## v0.3.0a1 (통합 코어) 위협 모델 갱신
+
+상태: 초안. **외부 침투 테스트·퍼징·형식 검증은 여전히 수행하지 않았다.** 아래 표는 "구현했고 로컬 테스트로 확인한 것"과 "아직 검증하지 않은 것"을 구분한다.
+
+### 실행 경계 — 무엇이 보안 경계이고 무엇이 아닌가
+
+| 구성 요소 | 보안 경계인가 | 설명 |
+|---|---|---|
+| 컴파일 타임 검사 (스코프·타입·권한·라우트 정책·HTML 문맥·`_` 금지) | 아니다 (개발자 실수 방지) | 악의적 개발자를 막는 장치가 아니라 실수를 컴파일 단계에서 걸러내는 장치 |
+| IR 해석기 (Python Backend) | **아니다** | `eval`/`exec`/`compile` 없음, 속성 화이트리스트, 실행 상한이 있지만 같은 파이썬 프로세스 안이다. **신뢰할 수 없는 코드를 운영에서 실행하는 샌드박스로 주장하지 않는다** |
+| `/healthz` `/readyz` | 공개 (프로브용) | 상태 문자열만 반환. `/metrics` 는 기본 비공개 (위 표) |
+| 격리 워커 (`std.worker`) | 부분적 | 별도 프로세스 + 루프백 고정 주소 + 응답 타입 검증. 같은 파드/네트워크 네임스페이스라 **침해된 워커를 루프백이 막아주지는 않는다** → 워커 자체 하드닝(비루트, 읽기전용, drop ALL)과 별도 이그레스 정책 필요 |
+| 컨테이너/K8s (`sori k8s`) | 그렇다 (운영자 설정 전제) | 비루트, 읽기전용 루트FS, capabilities drop ALL, seccomp, SA 토큰 미마운트, NetworkPolicy(인그레스는 앱 포트, 이그레스는 클러스터 DNS 만). 표준 NetworkPolicy 는 도메인 단위 허용을 못 하므로 `net` 권한의 외부 이그레스는 `--egress cilium`(CiliumNetworkPolicy toFQDNs) 또는 egress gateway 가 있어야 열린다. 커널·런타임 취약점과 운영자 재설정은 통제 밖 |
+| `use py` (같은 프로세스 파이썬) | 아니다 | **개발 전용.** `[dev] in_process_python = true` 가 있어야 컴파일되고, `SORI_ENV=production` 이면 기동 거부 |
+
+### 구현·테스트된 통제 (로컬 121 tests)
+
+| 위협 | 통제 | 테스트 |
+|---|---|---|
+| 동적 코드 실행 | 런타임 경로에 eval/exec/compile 없음 | AST 스캔 테스트 + CI grep 가드 |
+| 변조된 IR | 구조 검증 실패 시 실행 거부 (Python·Rust 모두) | `test_validator_rejects_tampered_ir`, `test_tampered_ir_is_refused_by_interpreter`, Rust 로드 거부 |
+| 인증 누락·우회 | 라우트별 정책 필수(E301), 인증을 본문 파싱보다 먼저, bearer 상수 시간 비교, 토큰 32자 미만 기동 거부 | `AuthOrdering`, `FailClosed`, 마이그레이션 동등성 |
+| 워커 오남용 | public 라우트에서 워커 호출 금지 (E306) — 함수 경유뿐 아니라 함수값 별칭·맵/목록/레코드 저장·람다 교체·고차 함수 경유까지 보수적으로 추적. std 함수/모듈을 값으로 쓰는 것은 금지(E110), IR 검증기·런타임도 거부. 이름은 고정 문자열, 응답 타입 검증(위반 시 502) | `test_indirect_worker_paths_are_blocked` (11가지 경로), `test_tampered_ir_*std*`, `WorkerV2` |
+| 입력 기반 공격 | 범위 필수(E305, 기본값), 엄격 JSON(문자열 숫자·1→true 거부), 중복 키·NaN·깊이·개수·길이 제한, mass assignment 거부 | `test_input_hardening` (12종) |
+| SQLi / XSS / CSRF / SSRF / 오픈 리다이렉트 / 비밀값 노출 | Ara 통제 유지 — SQLi: sql 리터럴만 · XSS: 문맥 이스케이프 · CSRF: Origin 검사 · SSRF: 내부망 차단·IP 고정 · 오픈 리다이렉트: 상대 경로만 · 비밀값: Secret 마스킹 | `RuntimeSecurity`, 예제 todo 16 tests |
+| 경로 탈출 / 과도한 파일 권한 | `fs_read`·`fs_write` 는 **프로젝트 기준 상대 경로만** (절대 경로·`..` 는 E204). 권한 경로가 심볼릭 링크로 프로젝트 밖을 가리키면 E204 + 허용 목록 제외 + 기동 거부. 접근 시 realpath 로 허용 디렉터리 안인지 확인 | `FilePermissionScope` (절대·상위 경로, 심볼릭 링크 탈출), `ConfigInjection` |
+| 요청 스머글링·압축 본문·경로 혼동 | TE 거부, 보안 헤더 중복 거부, Content-Encoding 415, 인코딩된 `/` `..` 거부 (내장 서버·ASGI 공통) | `BuiltinServer`, `AsgiAdapter`, uvicorn E2E |
+| 무한 루프·재귀 DoS | 단계 수·호출 깊이·요청 시간 상한, catch 불가 | `test_resource_limits_are_uncatchable`, `test_infinite_loop_request_is_stopped` |
+| 운영에서 보안 완화 | `strict_inputs=false`, `use py`, `sori.lock` 누락/불일치, 내장 서버 → 운영 기동 거부. 우회 설정 없음 (`allow_unlocked` 삭제) | `test_production_refuses_unsafe_configuration`, `test_production_has_no_bypass_switches`, OCI E2E |
+| 배포 리소스 변조 | `sori.lock` 이 이미지에 들어가는 파일 전부(.sori, sori.toml, 워커 파일, static, fs_read)를 해시. 해시 안 된 파일은 이미지에 없음 | `test_lock_covers_static_and_fs_read_files`, `test_context_contains_whole_package_and_hashed_files_only` |
+| 내부 지표 노출 | `/metrics` 기본 비공개: `SORI_METRICS_TOKEN` Bearer(상수 시간 비교) 없으면 401, 토큰 미설정이면 404. 공개는 `[security] metrics = "public"` 명시 | `MetricsPolicy`, `test_metrics_are_private_by_default` |
+| 메모리 고갈 | 반복 연산·`range` 결과 크기 상한 1천만 (catch 불가) | `test_huge_range_is_refused_and_uncatchable` |
+| 생성물 주입 (Dockerfile 셸·YAML) | sori.toml 의 경로·이름·호스트·패키지 값은 안전 문자 집합만 허용 (E204). 생성기 진입 시 재검사(API 우회 차단), Dockerfile 의 쓰기 디렉터리 생성은 셸 없는 exec 형식, YAML 값은 따옴표 처리 | `ConfigInjection` (악성 값 11종, 생성기 우회, exec 형식, YAML 왕복), CI 에서 악성 설정 거부 + 실제 docker build |
+| 과도한 이그레스 | 표준 NetworkPolicy 에 대상 없는 허용 규칙을 넣지 않음 (DNS 만). Cilium 모드는 선언한 호스트:포트만 | 표준 정책: `K8sEgress` + CI `k8s-egress`(kind 실클러스터에서 외부 443 차단·DNS 허용·대조 파드 접속 실측). **Cilium 모드: 생성 구조만 단위 테스트 — 실제 Cilium 클러스터에서 toFQDNs 집행은 검증하지 않음** |
+| 공급망 | 런타임 의존성 0 (uvicorn 은 선택), Rust 슬라이스 의존성 0, `sori.lock` 소스 해시 | (정적) |
+
+### 아직 검증하지 않은 영역 (프로덕션 게이트 추가 항목)
+
+> 알파 범위 결정 (ADR 0001 §6, 2026-10-27)
+> - 퍼징, 이미지 스캔, 실제 Cilium 검증은 **베타 진입 게이트**다.
+> - 외부 감사는 **첫 프로덕션 투입과 v1.0 중 더 이른 시점 이전에 필수**다.
+> - 측정 가능한 완료 기준은 ADR 0001 §6.1 에 있다 (검사량 기록, 미해결 크래시 0, 예외 기록 항목, Cilium E2E 범위).
+> - 0.3 알파는 이 항목들이 미수행인 상태이며, 운영 사용을 권장하지 않는다.
+
+- [ ] 퍼징: 렉서/파서, JSON 파서(Python·Rust), IR 해석기 차분 퍼징 — 베타 게이트
+- [ ] 외부 보안 감사 및 침투 테스트 — 운영/1.0 게이트
+- [ ] Docker 이미지 취약점 스캔 — 베타 게이트 (실제 빌드·하드닝 실행은 CI `oci-image` 작업이 이미 수행)
+- [ ] 실제 Cilium 클러스터에서 `--egress cilium` 집행 검증 — 베타 게이트 (그때까지 실험 기능)
+- [ ] IR 서명/출처 증명 (현재 구조 검사만)
+- [ ] 멀티 테넌트 인가(BOLA/ABAC), 감사 로그, 비밀키 로테이션
+- [ ] 리버스 프록시 앞단과의 헤더/경로 해석 일치 검증
+- [ ] Python Backend 의 OS 수준 격리 (seccomp 워커/WASM) — 현재 없음
+- [ ] 성능 회귀 기준 (현재 측정치: ADR 0001 §4)
+
+**주의:** 이 문서는 "모든 CVE 를 막는다"고 주장하지 않는다. 런타임(CPython·uvicorn·OS)과 의존 패키지 자체의 취약점은 SORI 가 막을 수 없고, 갱신·재빌드로 대응해야 한다.

@@ -1,0 +1,17 @@
+[app]
+name = "sori-secure-api"
+port = 8000
+server = "uvicorn"   # 운영: 검증된 ASGI 서버. 개발 중 의존성 없이 돌리려면 sori run --server builtin
+
+[security]
+strict_inputs = true  # 모든 외부 입력은 범위 필수 (v0.1 규칙)
+
+# 별도 프로세스의 파이썬/ML/ROS 코드. 루프백 고정 주소만 허용, 사용자 입력으로 주소가 바뀔 수 없음.
+# command 를 적으면 sori compose / sori k8s 가 사이드카 컨테이너를 자동으로 붙여줌.
+[workers.risk_model]
+url = "http://127.0.0.1:9010/invoke"
+timeout_ms = 1200
+command = ["python", "worker.py"]
+
+[permissions]
+# 외부 효과 없음 — 최소 권한

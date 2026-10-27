@@ -1,12 +1,78 @@
 {
   "scopeName": "source.sori",
   "patterns": [
-    {"name": "comment.line.number-sign.sori", "match": "#.*$"},
-    {"name": "keyword.control.sori", "match": "\\b(?:app|worker|timeout|route|public|protected|input|return|invoke)\\b"},
-    {"name": "storage.type.sori", "match": "\\b(?:str|int|float|bool)\\b"},
-    {"name": "constant.language.sori", "match": "\\b(?:True|False|None|GET|POST)\\b"},
-    {"name": "variable.other.sori", "match": "\\binput\\.[a-z][a-z0-9_]*\\b"},
-    {"name": "string.quoted.double.sori", "begin": "\"", "end": "\"", "patterns": [{"name": "constant.character.escape.sori", "match": "\\\\."}]},
-    {"name": "constant.numeric.sori", "match": "\\b\\d+(?:\\.\\d+)?\\b"}
-  ]
+    {
+      "name": "comment.line.number-sign.sori",
+      "match": "#.*$"
+    },
+    {
+      "name": "string.quoted.triple.sori",
+      "begin": "\\b(?:sql|html)?\"\"\"",
+      "end": "\"\"\"",
+      "patterns": [
+        {
+          "include": "#interp"
+        },
+        {
+          "name": "constant.character.escape.sori",
+          "match": "\\\\."
+        }
+      ]
+    },
+    {
+      "name": "string.quoted.double.sori",
+      "begin": "\\b(?:sql|html)?\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "include": "#interp"
+        },
+        {
+          "name": "constant.character.escape.sori",
+          "match": "\\\\."
+        }
+      ]
+    },
+    {
+      "name": "keyword.control.sori",
+      "match": "\\b(?:if|elif|else|for|in|while|return|break|continue|pass|try|catch|and|or|not)\\b"
+    },
+    {
+      "name": "keyword.declaration.sori",
+      "match": "\\b(?:use|py|type|fn|route|guard|public|task|every|test|let|var|app|worker|timeout|protected|input|invoke)\\b"
+    },
+    {
+      "name": "storage.type.sori",
+      "match": "\\b(?:Int|Float|Str|Bool|List|Map|Json|Html|Secret|Any|str|int|float|bool)\\b"
+    },
+    {
+      "name": "constant.language.sori",
+      "match": "\\b(?:true|false|none|True|False|None|GET|POST|PUT|PATCH|DELETE|bearer)\\b"
+    },
+    {
+      "name": "support.function.sori",
+      "match": "\\b(?:print|len|map|filter|sorted|sum|min|max|abs|round|respond|redirect|error|expect|unsafe_html|type_of)\\b(?=\\()"
+    },
+    {
+      "name": "variable.other.sori",
+      "match": "\\binput\\.[a-z][a-z0-9_]*\\b"
+    },
+    {
+      "name": "constant.numeric.sori",
+      "match": "\\b\\d+(?:_\\d+)*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b"
+    }
+  ],
+  "repository": {
+    "interp": {
+      "name": "meta.interpolation.sori",
+      "begin": "\\{(?!\\{)",
+      "end": "\\}",
+      "patterns": [
+        {
+          "name": "variable.other.sori",
+          "match": "[A-Za-z_가-힣][\\w가-힣]*"
+        }
+      ]
+    }
+  }
 }

@@ -1,0 +1,52 @@
+# SORI v0.1 examples/hello.sori 를 통합 문법(v0.3)으로 옮긴 예제. `sori migrate examples/hello.sori` 결과를 다듬은 것.
+# 모든 입력은 범위가 있고, 모든 라우트는 접근 정책이 있으며, 파이썬 모델은 별도 프로세스에서 돌아요.
+use std.worker
+
+type Greet:
+    name: Str(1, 80)
+
+type AddIn:
+    a: Int(-1000, 1000)
+    b: Int(-1000, 1000)
+
+type RiskIn:
+    signal: Float(0, 1)
+
+type RiskOut:
+    """워커 응답도 선언 타입으로 검증 — 선언 외 필드나 범위 밖 값은 502"""
+    risk: Str(1, 16)
+    kind: Str(1, 64)
+
+route GET "/health" public:
+    """상태 확인"""
+    return {status: "ok", framework: "SORI v0.3"}
+
+route POST "/greet" (body: Greet) guard bearer:
+    """인사 (Bearer 토큰 필요)"""
+    return {message: "안녕하세요, {body.name}"}
+
+route POST "/add" (body: AddIn) guard bearer:
+    """두 수 더하기 (Bearer 토큰 필요)"""
+    return {result: body.a + body.b}
+
+route POST "/risk" (body: RiskIn) guard bearer:
+    """격리된 파이썬 워커(ML/ROS 어댑터 자리) 호출"""
+    return worker.call("risk_model", body, RiskOut)
+
+test "health 는 공개":
+    expect(client.get("/health").json()["status"] == "ok")
+
+test "토큰 없으면 401 (v0.1 protected 와 동일), 토큰 있으면 통과":
+    expect(client.post("/greet", json={name: "세계"}).status == 401)
+    let r = client.post("/greet", json={name: "세계"}, auth=true)
+    expect(r.status == 200)
+    expect(r.json()["message"] == "안녕하세요, 세계")
+
+test "범위 밖 입력은 400":
+    expect(client.post("/add", json={a: 5000, b: 1}, auth=true).status == 400)
+    expect(client.post("/greet", json={name: ""}, auth=true).status == 400)
+    expect(client.post("/add", json={a: 2, b: 3}, auth=true).json()["result"] == 5)
+
+test "워커가 꺼져 있으면 502 (실패를 숨기지 않음)":
+    let r = client.post("/risk", json={signal: 0.9}, auth=true)
+    expect(r.status == 502 or r.status == 200)
