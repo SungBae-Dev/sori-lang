@@ -332,6 +332,41 @@ class MemoryLimits(unittest.TestCase):
             shutil.rmtree(d)
 
 
+class FilePermissionScope(unittest.TestCase):
+    """PR #3 3차 리뷰: 파일 권한은 프로젝트 기준 상대 경로만 — 절대 경로·밖을 가리키는 심볼릭 링크 금지."""
+
+    SRC = 'use std.fs\nfn peek() -> Str:\n    return fs.read("content/secret.txt")\nroute GET "/" public:\n    return "ok"\n'
+
+    def test_absolute_or_parent_paths_are_compile_errors_and_not_granted(self):
+        from sori_util import build, codes
+        for key, value in (("fs_read", "/etc"), ("fs_write", "/tmp/sori-x"), ("fs_read", "./a/../../etc")):
+            d, app, diags = build(self.SRC, f'[permissions]\n{key} = ["{value}"]\n')
+            try:
+                self.assertIn("E204", codes(diags), value)
+                self.assertEqual(getattr(app.caps, key), [], value)  # 런타임 허용 목록에도 들어가지 않음
+                self.assertTrue(app.startup_problems("serve"), value)
+            finally:
+                shutil.rmtree(d)
+
+    def test_symlink_escape_is_refused(self):
+        import tempfile
+        from sori.framework.app import build_app
+        from sori_util import codes, project
+        outside = tempfile.mkdtemp(prefix="sori_outside_")
+        self.addCleanup(shutil.rmtree, outside)
+        with open(os.path.join(outside, "secret.txt"), "w", encoding="utf-8") as f:
+            f.write("top secret\n")
+        d = project(self.SRC, '[permissions]\nfs_read = ["./content"]\n')
+        self.addCleanup(shutil.rmtree, d)
+        os.symlink(outside, os.path.join(d, "content"))  # 상대 경로처럼 보이지만 프로젝트 밖을 가리킴
+        app, diags = build_app(d)
+        self.assertIn("E204", codes(diags))
+        self.assertEqual(app.caps.fs_read, [])
+        self.assertTrue(any("심볼릭 링크" in p for p in app.startup_problems("serve")))
+        with self.assertRaises(SecurityError):
+            app.caps.fs_path("content/secret.txt")
+
+
 class MetricsPolicy(unittest.TestCase):
     def _app(self, toml):
         from sori_util import build

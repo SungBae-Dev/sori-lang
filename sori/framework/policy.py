@@ -118,7 +118,8 @@ def config_value_problems(config):
 
     for key in ("fs_read", "fs_write"):
         for p in strings(key):
-            msg = safe_path_problem(p, key)
+            # 파일 권한은 프로젝트 기준 상대 경로만 (절대 경로 = 루트 무시, PR #3 3차 리뷰)
+            msg = safe_path_problem(p, key, relative=True)
             if msg:
                 out.append(msg)
     for d in strings("db"):

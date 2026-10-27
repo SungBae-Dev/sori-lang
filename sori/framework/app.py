@@ -15,6 +15,7 @@ import traceback
 
 from .. import __version__
 from ..lang.compiler import compile_project
+from ..lang.diagnostics import SoriError
 from . import core
 from .core import ExpectFailed, SecurityError, SoriInputError, SoriTypeError, SoriUpstreamError, SoriUserError
 from .interp import Interpreter, ResourceLimit
@@ -121,6 +122,12 @@ class App:
     def compile(self):
         self.project = compile_project(self.sources, self.config)
         self.ir = self.project.to_ir(self.name)
+        seen = {d.message for d in self.project.diags}
+        for msg in self.caps.problems:  # 파일 시스템을 봐야 알 수 있는 권한 문제 (심볼릭 링크 탈출 등)
+            if msg in seen:
+                continue
+            self.project.diags.append(SoriError("E204", msg, "sori.toml", 0, 0,
+                                                "파일 권한은 프로젝트 폴더 안의 상대 경로만 허용돼요"))
         return self.project.diags
 
     def errors(self):
@@ -164,7 +171,7 @@ class App:
 
         운영(SORI_ENV=production)에는 우회 스위치가 없다: lock 누락, 내장 서버, strict_inputs=false,
         같은 프로세스 파이썬은 설정으로 허용할 수 없다."""
-        problems = []
+        problems = list(self.caps.problems)
         if self.metrics_mode == "invalid":
             problems.append('[security] metrics 는 "token" · "public" · "off" 중 하나여야 해요')
         mtok = os.environ.get(METRICS_TOKEN_ENV, "")

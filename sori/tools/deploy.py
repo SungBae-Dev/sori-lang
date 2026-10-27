@@ -274,9 +274,9 @@ def writable_dirs(app):
     from ..framework.policy import safe_path_problem
     clean = []
     for w in sorted(out):
-        if not w or os.path.isabs(w):
-            continue  # 절대 경로는 이미지/파드 안 쓰기 볼륨 대상이 아님
-        msg = safe_path_problem(w, "쓰기 경로", relative=True)
+        if not w:
+            continue
+        msg = safe_path_problem(w, "쓰기 경로", relative=True)  # 절대 경로도 여기서 거부 (조용히 빼지 않음)
         if msg:
             raise ValueError(msg)
         w = os.path.normpath(w)
@@ -438,6 +438,8 @@ spec:
         fqdn_rules = "\n".join(rules)
         deploy += f"""---
 # Cilium: 도메인 단위 이그레스 — net 권한의 호스트:포트만 (표준 NetworkPolicy 와 합집합이어도 열린 규칙 없음)
+# 주의: 이 정책은 생성 구조만 단위 테스트로 확인했고, 실제 Cilium 클러스터에서 집행을 검증하지는 않았어요.
+#       적용 후 허용 호스트 접속·그 외 차단을 직접 확인하세요 (CI 의 실클러스터 검증은 기본 NetworkPolicy 만).
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:

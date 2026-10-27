@@ -28,17 +28,26 @@ from .core import (STRICT, SoriInputError, SoriTypeError, SoriUpstreamError, Que
 class Caps:
     def __init__(self, perms, root):
         self.root = os.path.realpath(root)
+        self.problems = []  # 프로젝트 밖을 가리키는 파일 권한 등 — 허용 목록에서 빼고 기동 시 거부 사유로 보고
         self.net = [self._parse_net(e) for e in perms.get("net", [])]
         self.net_private = {h.lower() for h in perms.get("net_private", [])}
-        w = [self._dir(p) for p in perms.get("fs_write", [])]
+        w = [d for d in (self._dir(p, "fs_write") for p in perms.get("fs_write", [])) if d]
         self.fs_write = w
-        self.fs_read = [self._dir(p) for p in perms.get("fs_read", [])] + w
+        self.fs_read = [d for d in (self._dir(p, "fs_read") for p in perms.get("fs_read", [])) if d] + w
         self.env = set(perms.get("env", []))
         self.python = set(perms.get("python", []))
         self.db = list(perms.get("db", []))
 
-    def _dir(self, p):
-        return os.path.realpath(os.path.join(self.root, p))
+    def _dir(self, p, key="fs"):
+        """권한 경로 → 실제 경로. 절대 경로이거나 (심볼릭 링크를 따라가) 프로젝트 밖이면 허용하지 않는다."""
+        if not isinstance(p, str) or os.path.isabs(p):
+            self.problems.append(f"{key} 경로 {p!r} 는 프로젝트 기준 상대 경로여야 해요")
+            return None
+        full = os.path.realpath(os.path.join(self.root, p))
+        if not (full == self.root or full.startswith(self.root + os.sep)):
+            self.problems.append(f"{key} 경로 {p!r} 가 프로젝트 폴더 밖({full})을 가리켜요 (심볼릭 링크 탈출)")
+            return None
+        return full
 
     @staticmethod
     def _parse_net(entry):

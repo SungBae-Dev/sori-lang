@@ -178,6 +178,8 @@ class ConfigInjection(unittest.TestCase):
         "python 패키지": '[permissions]\npython = ["requests; rm -rf /"]\n',
         "워커 이름": '[workers."w x"]\nurl = "http://127.0.0.1:9010/invoke"\n',
         "static 경로": '[app]\nstatic = "./st atic"\n',
+        "fs_read 절대 경로": '[permissions]\nfs_read = ["/etc"]\n',
+        "fs_write 절대 경로": '[permissions]\nfs_write = ["/tmp/sori-x"]\n',
     }
 
     def _proj(self, toml):
@@ -204,11 +206,12 @@ class ConfigInjection(unittest.TestCase):
         d = self._proj('[permissions]\nfs_write = ["data"]\n')
         app, diags = build_app(d)
         self.assertFalse([x for x in diags if x.severity == "error"])
-        app.perms["fs_write"] = ["data; echo unsafe > /tmp/sori-demo #"]  # 컴파일 뒤 설정 변조
-        for fn in (lambda: deploy.build_oci(app, str(Path(d, "ctx"))), lambda: deploy.k8s(app), lambda: deploy.compose(app),
-                   lambda: deploy.writable_dirs(app)):
-            with self.assertRaises(ValueError):
-                fn()
+        for bad in ("data; echo unsafe > /tmp/sori-demo #", "/var/lib/outside"):
+            app.perms["fs_write"] = [bad]  # 컴파일 뒤 설정 변조
+            for fn in (lambda: deploy.build_oci(app, str(Path(d, "ctx"))), lambda: deploy.k8s(app),
+                       lambda: deploy.compose(app), lambda: deploy.writable_dirs(app)):
+                with self.assertRaises(ValueError, msg=bad):
+                    fn()
         self.assertFalse(Path(d, "ctx", "Dockerfile").exists())
 
     def test_dockerfile_uses_exec_form_without_shell(self):
