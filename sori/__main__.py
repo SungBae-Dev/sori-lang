@@ -235,7 +235,11 @@ def cmd_gen(kind):
             return 1
         from .tools import deploy
         if kind == 'k8s':
-            print(deploy.k8s(app, a.image, a.replicas))
+            text = deploy.k8s(app, a.image, a.replicas, a.egress)
+            if app.perms.get('net') and a.egress == 'none':
+                print('⚠ net 권한이 있지만 표준 NetworkPolicy 로는 도메인 단위 허용이 안 돼서 외부 이그레스를 막았어요. '
+                      'Cilium 이면 --egress cilium, 아니면 egress gateway 를 쓰세요', file=sys.stderr)
+            print(text)
         elif kind == 'compose':
             print(deploy.compose(app, a.image))
         elif kind == 'audit':
@@ -316,6 +320,8 @@ def main(argv=None) -> int:
     sp = add('k8s', cmd_gen('k8s'), 'Kubernetes 매니페스트 (권한 → NetworkPolicy, 워커 사이드카)')
     sp.add_argument('--image')
     sp.add_argument('--replicas', type=int, default=2)
+    sp.add_argument('--egress', choices=('none', 'cilium'), default='none',
+                    help='외부 이그레스: none(기본, DNS 만) | cilium(CiliumNetworkPolicy toFQDNs 로 net 권한만)')
     sp = add('compose', cmd_gen('compose'), 'Docker Compose (앱 + 워커 사이드카)')
     sp.add_argument('--image')
     sp = add('new', cmd_new, '새 프로젝트 (sori.toml + app.sori)', path=False)

@@ -13,7 +13,7 @@ from .surface import (BUILTIN_RET, CLIENT_RESPONSE_SURFACE, ERROR_SURFACE, FORBI
                       HTTP_RESPONSE_SURFACE, LIST_METHODS, MAP_METHODS, QUERY_SURFACE, RECORD_METHODS,
                       REQUEST_SURFACE, RESPONSE_SURFACE, ROW_SURFACE, SECRET_SURFACE, STD_EFFECTS, STD_METHODS,
                       STR_METHODS, TEST_CLIENT_SURFACE)
-from ..framework.policy import worker_problems
+from ..framework.policy import config_value_problems, worker_problems
 from .ir import IR_VERSION
 
 BUILTIN_TYPES = {"Int": 0, "Float": 0, "Str": 0, "Bool": 0, "Json": 0, "Html": 0, "Secret": 0, "Any": 0,
@@ -97,6 +97,9 @@ class Project:
         for wname, wcfg in self.workers.items():
             for msg in worker_problems(wname, wcfg):
                 self.error("E203", msg, "sori.toml", 0, 0, "워커는 같은 파드 안 사이드카로 두고 루프백으로만 호출해요")
+        for msg in config_value_problems(self.config):
+            self.error("E204", msg, "sori.toml", 0, 0,
+                       "이 값들은 Dockerfile·Kubernetes YAML 에도 들어가요 — 셸/YAML 특수문자는 받지 않아요")
         for path, src in self.files.items():
             try:
                 progs[path] = parse(src, path)

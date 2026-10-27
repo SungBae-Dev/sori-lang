@@ -155,6 +155,147 @@ class DeployStatic(unittest.TestCase):
         self.assertIn("worker-risk-model", yaml.safe_load(text)["services"])
 
 
+def _yaml():
+    try:
+        import yaml
+        return yaml
+    except ImportError:
+        return None
+
+
+class ConfigInjection(unittest.TestCase):
+    """PR #3 2차 리뷰 P1: sori.toml 값이 Dockerfile(셸)·YAML 로 주입되지 않는다."""
+
+    BAD = {
+        "fs_write 셸 주입": '[permissions]\nfs_write = ["data; echo unsafe > /tmp/sori-demo #"]\n',
+        "fs_write 명령 치환": '[permissions]\nfs_write = ["$(id)"]\n',
+        "sqlite 경로 주입": '[permissions]\ndb = ["sqlite:./data`id`/x.db"]\n',
+        "sqlite 상위 경로": '[permissions]\ndb = ["sqlite:../outside.db"]\n',
+        "env 이름 YAML 주입": '[permissions]\nenv = ["FOO\\n          privileged: true"]\n',
+        "secrets 이름": '[secrets]\n"A B" = 32\n',
+        "net 따옴표": '[permissions]\nnet = ["api.example.com\\" ; x"]\n',
+        "net 경로": '[permissions]\nnet = ["https://api.example.com/x?y=1"]\n',
+        "python 패키지": '[permissions]\npython = ["requests; rm -rf /"]\n',
+        "워커 이름": '[workers."w x"]\nurl = "http://127.0.0.1:9010/invoke"\n',
+        "static 경로": '[app]\nstatic = "./st atic"\n',
+    }
+
+    def _proj(self, toml):
+        d = tempfile.mkdtemp(prefix="sori_inj_")
+        self.addCleanup(shutil.rmtree, d)
+        Path(d, "sori.toml").write_text(toml, encoding="utf-8")
+        Path(d, "app.sori").write_text('route GET "/" public:\n    return "ok"\n', encoding="utf-8")
+        return d
+
+    def test_unsafe_values_are_compile_errors_and_build_refuses(self):
+        for name, toml in self.BAD.items():
+            with self.subTest(name):
+                d = self._proj(toml)
+                r = cli("check", d, "--json")
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("E204", r.stdout + r.stderr)
+                r = cli("build", d, "--target", "oci", "--out", Path(d, "ctx"))
+                self.assertNotEqual(r.returncode, 0)
+                self.assertFalse(Path(d, "ctx", "Dockerfile").exists())
+
+    def test_generators_refuse_even_if_compile_check_is_bypassed(self):
+        from sori.framework.app import build_app
+        from sori.tools import deploy
+        d = self._proj('[permissions]\nfs_write = ["data"]\n')
+        app, diags = build_app(d)
+        self.assertFalse([x for x in diags if x.severity == "error"])
+        app.perms["fs_write"] = ["data; echo unsafe > /tmp/sori-demo #"]  # 컴파일 뒤 설정 변조
+        for fn in (lambda: deploy.build_oci(app, str(Path(d, "ctx"))), lambda: deploy.k8s(app), lambda: deploy.compose(app),
+                   lambda: deploy.writable_dirs(app)):
+            with self.assertRaises(ValueError):
+                fn()
+        self.assertFalse(Path(d, "ctx", "Dockerfile").exists())
+
+    def test_dockerfile_uses_exec_form_without_shell(self):
+        d = self._proj('[permissions]\nfs_write = ["./data-1/sub.dir"]\ndb = ["sqlite:./db/app.db"]\n')
+        r = cli("build", d, "--target", "oci", "--out", Path(d, "ctx"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        df = Path(d, "ctx", "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn('RUN ["mkdir", "-p", "/app/data-1/sub.dir", "/app/db"]', df)
+        self.assertIn('RUN ["chown", "10001:10001", "/app/data-1/sub.dir", "/app/db"]', df)
+        run_lines = [l for l in df.splitlines() if l.startswith("RUN ")]
+        shell_runs = [l for l in run_lines if not l.startswith('RUN ["') and "pip install" not in l and "groupadd" not in l]
+        self.assertEqual(shell_runs, [])
+
+    def test_yaml_values_are_quoted(self):
+        yaml = _yaml()
+        if yaml is None:
+            self.skipTest("PyYAML 없음 — CI 에서 수행")
+        from sori.framework.app import build_app
+        from sori.tools import deploy
+        d = self._proj('[permissions]\nenv = ["API_KEY_1"]\nfs_write = ["./var/run-x"]\n[secrets]\nSESSION_KEY = 32\n')
+        app, _ = build_app(d)
+        docs = [x for x in yaml.safe_load_all(deploy.k8s(app, "registry.local/app:1")) if x]
+        c = docs[0]["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(c["image"], "registry.local/app:1")
+        self.assertEqual({e["name"] for e in c["env"]}, {"API_KEY_1", "SESSION_KEY"})
+        self.assertIn("/app/var/run-x", [m["mountPath"] for m in c["volumeMounts"]])
+
+
+class K8sEgress(unittest.TestCase):
+    """PR #3 2차 리뷰 P2: 표준 NetworkPolicy 에 '대상 없는 443 허용' 을 넣지 않는다."""
+
+    def _app(self, toml):
+        from sori.framework.app import build_app
+        d = tempfile.mkdtemp(prefix="sori_k8s_")
+        self.addCleanup(shutil.rmtree, d)
+        Path(d, "sori.toml").write_text(toml, encoding="utf-8")
+        Path(d, "app.sori").write_text('route GET "/" public:\n    return "ok"\n', encoding="utf-8")
+        app, diags = build_app(d)
+        self.assertFalse([x for x in diags if x.severity == "error"])
+        return app
+
+    def _docs(self, text):
+        yaml = _yaml()
+        if yaml is None:
+            self.skipTest("PyYAML 없음 — CI 에서 수행")
+        return [x for x in yaml.safe_load_all(text) if x]
+
+    def test_default_allows_only_cluster_dns(self):
+        from sori.tools import deploy
+        text = deploy.k8s(self._app('[permissions]\nnet = ["api.anthropic.com", "api.example.com:8443"]\n'))
+        self.assertIn("외부 이그레스를 열지 않았어요", text)
+        docs = self._docs(text)
+        self.assertEqual([x["kind"] for x in docs], ["Deployment", "Service", "NetworkPolicy"])
+        rules = docs[2]["spec"]["egress"]
+        self.assertEqual(len(rules), 1)
+        for rule in rules:
+            self.assertIn("to", rule, "대상(to) 없는 이그레스 규칙은 모든 목적지 허용이 된다")
+            self.assertEqual(sorted(p["port"] for p in rule["ports"]), [53, 53])
+            peer = rule["to"][0]
+            self.assertEqual(peer["namespaceSelector"]["matchLabels"], {"kubernetes.io/metadata.name": "kube-system"})
+            self.assertEqual(peer["podSelector"]["matchLabels"], {"k8s-app": "kube-dns"})
+
+    def test_cilium_mode_allows_only_declared_host_ports(self):
+        from sori.tools import deploy
+        app = self._app('[permissions]\nnet = ["api.anthropic.com", "api.example.com:8443", "*.cdn.example.org"]\n')
+        docs = self._docs(deploy.k8s(app, egress="cilium"))
+        self.assertEqual([x["kind"] for x in docs], ["Deployment", "Service", "NetworkPolicy", "CiliumNetworkPolicy"])
+        self.assertEqual(len(docs[2]["spec"]["egress"]), 1)  # 표준 정책은 여전히 DNS 만
+        allowed = set()
+        for rule in docs[3]["spec"]["egress"]:
+            if "toFQDNs" in rule:
+                sel = rule["toFQDNs"][0]
+                host = sel.get("matchName") or sel.get("matchPattern")
+                for tp in rule["toPorts"]:
+                    for p in tp["ports"]:
+                        allowed.add((host, p["port"]))
+            else:
+                self.assertIn("toEndpoints", rule)  # DNS
+        self.assertEqual(allowed, {("api.anthropic.com", "443"), ("api.example.com", "8443"), ("*.cdn.example.org", "443")})
+
+    def test_no_net_permission_no_external_rules(self):
+        from sori.tools import deploy
+        text = deploy.k8s(self._app("[permissions]\n"), egress="cilium")
+        self.assertNotIn("CiliumNetworkPolicy", text)
+        self.assertNotIn("외부 이그레스를 열지 않았어요", text)
+
+
 def _uvicorn_available():
     try:
         import uvicorn  # noqa: F401
@@ -184,6 +325,9 @@ class OciContextE2E(unittest.TestCase):
                     p.wait(5)
                 except subprocess.TimeoutExpired:
                     p.kill()
+                    p.wait(5)
+            if p.stderr is not None:
+                p.stderr.close()
 
     def _context(self, example):
         proj = Path(self.tmp, example)
@@ -212,7 +356,8 @@ class OciContextE2E(unittest.TestCase):
         self.assertIn("static/app.css", lock["files"])
         self.assertIn("content/readme.txt", lock["files"])
         df = (ctx / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn("mkdir -p /app/data && chown 10001:10001 /app/data", df)
+        self.assertIn('RUN ["mkdir", "-p", "/app/data"]', df)  # exec 형식 (셸 없음, 2차 리뷰 P1)
+        self.assertIn('RUN ["chown", "10001:10001", "/app/data"]', df)
         self.assertIn('"--server", "uvicorn"', df)
         self.assertIn("uvicorn", (ctx / "requirements.txt").read_text(encoding="utf-8"))
 

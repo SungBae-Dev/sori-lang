@@ -209,8 +209,22 @@ def write_lock(app):
     return lock
 
 
+def _guard(app):
+    """생성기 진입 시 sori.toml 값 형식을 다시 검사한다 (컴파일러 E204 와 같은 규칙, API 직접 호출 우회 차단)."""
+    from ..framework.policy import config_value_problems
+    probs = config_value_problems(app.config)
+    if probs:
+        raise ValueError("sori.toml 값이 안전하지 않아 배포 산출물을 만들지 않았어요: " + "; ".join(probs[:5]))
+
+
+def _q(v):
+    """YAML/Dockerfile JSON 배열용 문자열 리터럴 (JSON 문자열은 YAML 큰따옴표 스칼라로도 유효)."""
+    return json.dumps(str(v), ensure_ascii=False)
+
+
 def build_oci(app, out=None):
     """OCI(Docker) 빌드 컨텍스트 + sori.lock. 이미지 자체를 빌드하지는 않는다."""
+    _guard(app)
     lock = write_lock(app)
     out = out or os.path.join(app.root, ".sori", "build")
     if os.path.exists(out):
@@ -241,8 +255,9 @@ def build_oci(app, out=None):
     writable = writable_dirs(app)
     wr = ""
     if writable:
-        paths = " ".join("/app/" + w for w in writable)
-        wr = f"RUN mkdir -p {paths} && chown 10001:10001 {paths}\n"
+        # exec 형식(JSON 배열): 셸을 거치지 않으므로 경로가 명령으로 해석될 수 없다 (경로 문자 집합 검사와 이중 방어)
+        paths = ", ".join(_q("/app/" + w) for w in writable)
+        wr = f'RUN ["mkdir", "-p", {paths}]\nRUN ["chown", "10001:10001", {paths}]\n'
     with open(os.path.join(out, "Dockerfile"), "w") as f:
         f.write(DOCKERFILE.format(port=port, pip=pip, writable=wr))
     with open(os.path.join(out, ".dockerignore"), "w") as f:
@@ -256,15 +271,36 @@ def writable_dirs(app):
     perms = app.perms
     out = set(perms.get("fs_write", [])) | {os.path.dirname(d[len("sqlite:"):]) for d in perms.get("db", [])
                                              if d.startswith("sqlite:") and d != "sqlite::memory:"}
+    from ..framework.policy import safe_path_problem
     clean = []
     for w in sorted(out):
-        w = os.path.normpath(w) if w else ""
-        if w and w != "." and not w.startswith("..") and not os.path.isabs(w):
+        if not w or os.path.isabs(w):
+            continue  # 절대 경로는 이미지/파드 안 쓰기 볼륨 대상이 아님
+        msg = safe_path_problem(w, "쓰기 경로", relative=True)
+        if msg:
+            raise ValueError(msg)
+        w = os.path.normpath(w)
+        if w != "." and not w.startswith(".."):
             clean.append(w)
     return clean
 
 
-def k8s(app, image=None, replicas=2):
+def _net_targets(app):
+    """[permissions] net → (host, port) 목록 (런타임 Caps 와 같은 해석)."""
+    from ..framework.stdlib import Caps
+    out = []
+    for entry in app.perms.get("net", []):
+        scheme, host, port = Caps._parse_net(entry)
+        out.append((host, port))
+    return sorted(set(out))
+
+
+def k8s(app, image=None, replicas=2, egress="none"):
+    """egress: "none"(기본) — 표준 NetworkPolicy 는 DNS 만 허용하고 외부 이그레스는 열지 않는다.
+               "cilium" — CiliumNetworkPolicy(toFQDNs)로 net 권한의 호스트:포트만 허용하는 문서를 추가한다."""
+    _guard(app)
+    if egress not in ("none", "cilium"):
+        raise ValueError('egress 는 "none" 또는 "cilium" 이어야 해요')
     name = re.sub(r"[^a-z0-9-]", "-", app.config.get("app", {}).get("name", os.path.basename(app.root)).lower()).strip("-") or "sori-app"
     port = int(app.config.get("app", {}).get("port", 8080))
     image = image or f"{name}:latest"
@@ -272,22 +308,22 @@ def k8s(app, image=None, replicas=2):
     writable = writable_dirs(app)
     mounts, vols = [], []
     for i, w in enumerate(writable):
-        mounts.append(f"            - name: data{i}\n              mountPath: /app/{w}")
+        mounts.append(f"            - name: data{i}\n              mountPath: {_q('/app/' + w)}")
         vols.append(f"        - name: data{i}\n          emptyDir: {{}}")
     mounts.append("            - name: tmp\n              mountPath: /tmp")
     vols.append("        - name: tmp\n          emptyDir: {}")
     env_lines = []
     for e in perms.get("env", []):
-        env_lines.append(f"            - name: {e}\n              valueFrom:\n                secretKeyRef:\n"
-                         f"                  name: {name}-secrets\n                  key: {e}\n                  optional: true")
+        env_lines.append(f"            - name: {_q(e)}\n              valueFrom:\n                secretKeyRef:\n"
+                         f"                  name: {name}-secrets\n                  key: {_q(e)}\n                  optional: true")
     required = list(app.config.get("secrets", {}))
     if app.project.uses_bearer:
         required.append("SORI_API_TOKEN")
     for e in required:
         if e in perms.get("env", []):
             continue
-        env_lines.append(f"            - name: {e}\n              valueFrom:\n                secretKeyRef:\n"
-                         f"                  name: {name}-secrets\n                  key: {e}")
+        env_lines.append(f"            - name: {_q(e)}\n              valueFrom:\n                secretKeyRef:\n"
+                         f"                  name: {name}-secrets\n                  key: {_q(e)}")
     env_block = ("          env:\n" + "\n".join(env_lines) + "\n") if env_lines else ""
     sidecars = ""
     for wname, wcfg in app.config.get("workers", {}).items():
@@ -295,7 +331,7 @@ def k8s(app, image=None, replicas=2):
             continue
         cmd = ", ".join(json.dumps(c) for c in wcfg["command"])
         sidecars += f"""        - name: worker-{re.sub(r'[^a-z0-9-]', '-', wname.lower())}
-          image: {image}
+          image: {_q(image)}
           imagePullPolicy: IfNotPresent
           workingDir: /app
           command: [{cmd}]
@@ -307,14 +343,17 @@ def k8s(app, image=None, replicas=2):
             requests: {{cpu: 50m, memory: 64Mi}}
             limits: {{cpu: 500m, memory: 512Mi}}
 """
-    hosts = []
-    for entry in perms.get("net", []):
-        e = entry.lower()
-        h = re.sub(r"^\w+://", "", e).split(":")[0].split("/")[0]
-        hosts.append(h)
-    egress = "    - to:\n        - namespaceSelector: {}\n      ports:\n        - protocol: UDP\n          port: 53\n        - protocol: TCP\n          port: 53\n"
-    if hosts:
-        egress += "    - ports:\n        - protocol: TCP\n          port: 443\n"
+    targets = _net_targets(app)
+    # 표준 NetworkPolicy 는 도메인(FQDN) 단위 허용을 표현할 수 없다. 대상(to) 없는 443 허용은 '모든 목적지' 가 되므로
+    # 넣지 않는다 (PR #3 2차 리뷰 P2). 이그레스는 클러스터 DNS(kube-system/kube-dns)만 허용.
+    egress_rules = ("    - to:\n        - namespaceSelector:\n            matchLabels: {kubernetes.io/metadata.name: kube-system}\n"
+                    "          podSelector:\n            matchLabels: {k8s-app: kube-dns}\n"
+                    "      ports:\n        - protocol: UDP\n          port: 53\n        - protocol: TCP\n          port: 53\n")
+    header = "# SORI 가 sori.toml 권한에서 생성한 매니페스트 (최소 권한)\n"
+    if targets and egress == "none":
+        header += ("# 주의: [permissions] net = " + ", ".join(f"{h}:{p}" for h, p in targets) + "\n"
+                   "#   표준 NetworkPolicy 로는 도메인 단위 이그레스를 표현할 수 없어 외부 이그레스를 열지 않았어요 (기본 거부).\n"
+                   "#   Cilium 이면 'sori k8s --egress cilium' (CiliumNetworkPolicy toFQDNs), 아니면 검증된 egress gateway 를 쓰세요.\n")
     from ..framework.app import metrics_mode
     if metrics_mode(app.config) == "public":
         annotations = f'      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "{port}"\n'
@@ -322,8 +361,7 @@ def k8s(app, image=None, replicas=2):
         # 기본(token): /metrics 는 SORI_METRICS_TOKEN Bearer 가 있어야 응답 — 어노테이션 기반 무인증 스크랩은 쓰지 않음.
         # Prometheus Operator 를 쓴다면 ServiceMonitor 의 bearerTokenSecret 으로 같은 토큰을 지정하세요.
         annotations = '      annotations:\n        sori.dev/metrics: "token (SORI_METRICS_TOKEN, ServiceMonitor bearerTokenSecret)"\n'
-    deploy = f"""# SORI 가 sori.toml 권한에서 생성한 매니페스트 (최소 권한)
-apiVersion: apps/v1
+    deploy = header + f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {name}
@@ -345,7 +383,7 @@ spec:
         seccompProfile: {{type: RuntimeDefault}}
       containers:
         - name: app
-          image: {image}
+          image: {_q(image)}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: {port}
@@ -377,7 +415,7 @@ spec:
     - port: 80
       targetPort: {port}
 ---
-# 기본 거부 + sori.toml 의 net 권한만큼만 이그레스 허용
+# 기본 거부: 인그레스는 앱 포트만, 이그레스는 클러스터 DNS 만 (외부 목적지는 --egress cilium 문서에서만 허용)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -391,11 +429,15 @@ spec:
         - protocol: TCP
           port: {port}
   egress:
-{egress}"""
-    if hosts:
-        fqdn = "\n".join(f"            - matchName: \"{h}\"" if not h.startswith("*.") else f"            - matchPattern: \"{h}\"" for h in hosts)
+{egress_rules}"""
+    if targets and egress == "cilium":
+        rules = []
+        for h, p in targets:
+            sel = f"matchPattern: {_q(h)}" if h.startswith("*.") else f"matchName: {_q(h)}"
+            rules.append(f"    - toFQDNs:\n        - {sel}\n      toPorts:\n        - ports: [{{port: {_q(p)}, protocol: TCP}}]")
+        fqdn_rules = "\n".join(rules)
         deploy += f"""---
-# (Cilium 사용 시) 도메인 단위 이그레스 제한: net 권한 = {', '.join(hosts)}
+# Cilium: 도메인 단위 이그레스 — net 권한의 호스트:포트만 (표준 NetworkPolicy 와 합집합이어도 열린 규칙 없음)
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -410,16 +452,14 @@ spec:
         - ports: [{{port: "53", protocol: ANY}}]
           rules:
             dns: [{{matchPattern: "*"}}]
-    - toFQDNs:
-{fqdn}
-      toPorts:
-        - ports: [{{port: "443", protocol: TCP}}]
+{fqdn_rules}
 """
     return deploy
 
 
 # ---------------------------------------------------------------- Docker Compose
 def compose(app, image=None):
+    _guard(app)
     name = re.sub(r"[^a-z0-9-]", "-", app.config.get("app", {}).get("name", os.path.basename(app.root)).lower()).strip("-") or "sori-app"
     port = int(app.config.get("app", {}).get("port", 8080))
     image = image or f"{name}:latest"
@@ -433,7 +473,7 @@ def compose(app, image=None):
 services:
   app:
     build: .sori/build
-    image: {image}
+    image: {_q(image)}
     ports:
       - "127.0.0.1:{port}:{port}"
 """ + (f"    environment:\n{env_lines}" if env_lines else "") + hardening
@@ -442,7 +482,7 @@ services:
             continue
         cmd = ", ".join(json.dumps(c) for c in wcfg["command"])
         out += f"""  worker-{re.sub(r'[^a-z0-9-]', '-', wname.lower())}:
-    image: {image}
+    image: {_q(image)}
     depends_on:
       - app
     network_mode: "service:app"
