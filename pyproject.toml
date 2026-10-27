@@ -4,14 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sori-language-prototype"
-version = "0.2.0a1"
-description = "SORI language and secure-by-default ASGI API prototype"
+version = "0.3.0a1"
+description = "SORI — secure-by-default language and framework: unified core (Ara front-end), Typed IR v2, Python IR backend, B1 DSL compatibility"
 requires-python = ">=3.12"
 dependencies = []
 license = {text = "Apache-2.0"}
 
 [project.optional-dependencies]
 server = ["uvicorn>=0.34,<1"]
+test = ["pyyaml>=6,<7"]
 
 [project.scripts]
 sori = "sori.__main__:main"
