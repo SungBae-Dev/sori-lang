@@ -1,0 +1,82 @@
+# 피지컬 AI 예제: 고수준 제어 오케스트레이션 + 정책 검사 + 텔레메트리.
+#
+# SORI 의 역할은 '무엇을 할지'(목표·한계·감시)이고, 긴급 정지·안전 인터록·결정적 실시간 제어는
+# 별도 인증된 제어기(ROS 2 노드, PLC, 마이크로컨트롤러)의 몫이에요. 이 파일은 시뮬레이션이에요.
+
+var target = 1.0
+var position = 0.0
+var velocity = 0.0
+var integral = 0.0
+var prev_error = 0.0
+var history = []
+var seed = 12345
+
+let KP = 2.0
+let KI = 0.5
+let KD = 0.1
+let DT = 0.02
+let U_LIMIT = 5.0
+
+type Setpoint:
+    """목표 위치 — 범위 밖 값은 런타임까지 오지도 않아요"""
+    value: Float(-10, 10)
+
+fn noise() -> Float:
+    """결정적 의사난수 센서 노이즈 (LCG) — 재현 가능한 시뮬레이션"""
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    return (seed / 2147483648.0 - 0.5) * 0.004
+
+fn clip(x: Float, lo: Float, hi: Float) -> Float:
+    return lo if x < lo else (hi if x > hi else x)
+
+fn sensor() -> Float:
+    """노이즈 섞인 위치 센서 (시뮬레이션)"""
+    return position + noise()
+
+fn actuate(u: Float):
+    """1차 지연 액추에이터 모델"""
+    velocity += (u - velocity) * 0.2
+    position += velocity * DT
+
+fn step():
+    """제어 한 주기: 측정 → PID → 출력 제한 → 구동"""
+    let measured = sensor()
+    let e = target - measured
+    integral += e * DT
+    let derivative = (e - prev_error) / DT
+    prev_error = e
+    actuate(clip(KP * e + KI * integral + KD * derivative, -U_LIMIT, U_LIMIT))
+    history.append(position)
+    if len(history) > 500:
+        history = history[-500:]
+
+fn mean(xs: List[Float]) -> Float:
+    if len(xs) == 0:
+        return 0.0
+    return sum(xs) / len(xs)
+
+task control every 20 ms:
+    """50Hz 제어 루프 — 마감 초과/지터는 /metrics 로 노출"""
+    step()
+
+route GET "/state" public:
+    """현재 상태 텔레메트리"""
+    return {target: target, position: position, velocity: velocity, mean_recent: mean(history[-50:]), samples: len(history)}
+
+route POST "/target" (body: Setpoint) public:
+    """목표 위치 변경"""
+    target = body.value
+    integral = 0.0
+    return {target: target}
+
+test "PID 가 목표에 수렴한다":
+    var i = 0
+    while i < 600:
+        step()
+        i += 1
+    expect(abs(position - target) < 0.05, "수렴 실패: position={position}")
+
+test "범위 밖 목표는 거부된다":
+    expect(client.post("/target", json={value: 99.0}).status == 400)
+    expect(client.post("/target", json={value: "abc"}).status == 400)
+    expect(client.post("/target", json={value: 2.5}).json()["target"] == 2.5)

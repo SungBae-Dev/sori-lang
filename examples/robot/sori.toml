@@ -1,0 +1,10 @@
+[app]
+name = "sori-robot"
+port = 8081
+access_log = false
+
+[limits]
+task_ms = 15   # 50Hz 루프: 한 주기 실행이 15ms 를 넘으면 상한 초과로 중단(마감 초과는 /metrics 로 보고)
+
+[permissions]
+# 외부 효과 없음. 비전/ML 추론은 [workers] 로 분리하는 것이 기본 정책.

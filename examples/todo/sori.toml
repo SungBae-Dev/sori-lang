@@ -1,0 +1,21 @@
+[app]
+name = "sori-todo"
+port = 8080
+static = "./static"
+
+# 이 앱이 할 수 있는 일의 전부. 여기 없는 네트워크/파일/환경변수/패키지 접근은 컴파일 또는 런타임에서 거부됨.
+# k8s NetworkPolicy, 쓰기 볼륨, Secret 주입도 이 목록에서 자동 생성됨 (sori k8s).
+[permissions]
+db = ["sqlite:./data/todo.db"]
+env = ["ADMIN_KEY", "ANTHROPIC_API_KEY"]
+net = ["api.anthropic.com"]
+fs_read = ["./content"]
+
+[security]
+strict_inputs = true
+rate_limit_per_min = 600
+max_body_kb = 256
+
+[ai]
+model = "claude-sonnet-5-5"
+mock = true   # 데모: API 키 없이도 동작. 실제 호출은 false + ANTHROPIC_API_KEY
