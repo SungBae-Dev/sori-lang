@@ -1,0 +1,12 @@
+{
+  "scopeName": "source.sori",
+  "patterns": [
+    {"name": "comment.line.number-sign.sori", "match": "#.*$"},
+    {"name": "keyword.control.sori", "match": "\\b(?:app|worker|timeout|route|public|protected|input|return|invoke)\\b"},
+    {"name": "storage.type.sori", "match": "\\b(?:str|int|float|bool)\\b"},
+    {"name": "constant.language.sori", "match": "\\b(?:True|False|None|GET|POST)\\b"},
+    {"name": "variable.other.sori", "match": "\\binput\\.[a-z][a-z0-9_]*\\b"},
+    {"name": "string.quoted.double.sori", "begin": "\"", "end": "\"", "patterns": [{"name": "constant.character.escape.sori", "match": "\\\\."}]},
+    {"name": "constant.numeric.sori", "match": "\\b\\d+(?:\\.\\d+)?\\b"}
+  ]
+}

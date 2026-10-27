@@ -1,20 +1,27 @@
-name: SORI prototype checks
+name: SORI compiler and API checks
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Test compiler and runtime
+      - name: Test compiler, typed IR, OpenAPI and runtime
         run: python -m unittest discover -s tests -v
       - name: Validate example SORI program
         run: python -m sori check examples/hello.sori
-      - name: Compile Python sources
+      - name: Generate typed artifacts
+        run: python -m sori build examples/hello.sori --out .sori-build
+      - name: Validate machine-readable artifacts
+        run: |
+          python -m json.tool .sori-build/typed-ir.json > /dev/null
+          python -m json.tool .sori-build/openapi.json > /dev/null
+          python -m json.tool .sori-build/manifest.json > /dev/null
+      - name: Check Python compilation
         run: python -m compileall -q sori tests edge

@@ -6,10 +6,13 @@ No Python code from .sori files is compiled, exec'd, or eval'd.
 from __future__ import annotations
 
 import ast
+import math
 from dataclasses import dataclass
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from .typed_ir import SoriTypeError, lower_expr
 
 
 class SoriSyntaxError(ValueError):
@@ -119,6 +122,10 @@ def _validate_expr(node: ast.AST, names: set[str], depth: int = 0) -> None:
             raise SoriSyntaxError('unsupported literal')
         if type(node.value) is str and len(node.value) > 2048:
             raise SoriSyntaxError('literal string too large')
+        if type(node.value) is float and (not math.isfinite(node.value) or abs(node.value) > 1_000_000_000_000):
+            raise SoriSyntaxError('non-finite or excessive float literal')
+        if type(node.value) is int and abs(node.value) > 1_000_000_000_000:
+            raise SoriSyntaxError('excessive integer literal')
     elif isinstance(node, ast.Attribute):
         if not isinstance(node.value, ast.Name) or node.value.id != 'input' or node.attr not in names:
             raise SoriSyntaxError('only declared input.<name> access is allowed')
@@ -134,7 +141,7 @@ def _validate_expr(node: ast.AST, names: set[str], depth: int = 0) -> None:
         raise SoriSyntaxError(f'disallowed expression: {type(node).__name__}')
 
 
-def _parse_expression(text: str, names: set[str], line: int) -> ast.AST:
+def _parse_expression(text: str, names: dict[str, str], line: int) -> ast.AST:
     if len(text) > 4096:
         raise _error(line, 'expression too long')
     try:
@@ -146,9 +153,13 @@ def _parse_expression(text: str, names: set[str], line: int) -> ast.AST:
     if not isinstance(tree.body, ast.Dict):
         raise _error(line, 'return must be a JSON object literal')
     try:
-        _validate_expr(tree.body, names)
+        _validate_expr(tree.body, set(names))
     except SoriSyntaxError as exc:
         raise _error(line, str(exc)) from None
+    try:
+        lower_expr(tree.body, {name: kind for name, kind in names.items()})
+    except SoriTypeError as exc:
+        raise _error(line, f'type error: {exc}') from None
     return tree.body
 
 
@@ -211,7 +222,7 @@ def parse(source: str) -> Program:
             elif (matched := RETURN.fullmatch(body)):
                 if terminated:
                     raise _error(body_line, 'only one return/invoke per route')
-                expr = _parse_expression(matched.group(1), {f.name for f in fields}, body_line)
+                expr = _parse_expression(matched.group(1), {f.name: f.kind for f in fields}, body_line)
                 terminated = True
             elif (matched := INVOKE.fullmatch(body)):
                 if terminated:
@@ -225,6 +236,8 @@ def parse(source: str) -> Program:
             raise _error(n, 'route requires return or invoke')
         if method == 'GET' and (fields or worker_name):
             raise _error(n, 'GET routes cannot accept input or invoke workers')
+        if worker_name is not None and access != 'protected':
+            raise _error(n, 'worker invocation requires protected access')
         if worker_name is not None and method != 'POST':
             raise _error(n, 'worker routes must be POST')
         routes.append(Route(method, path, access, tuple(fields), expr, worker_name))

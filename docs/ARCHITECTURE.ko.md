@@ -98,3 +98,11 @@ ROS2 공식 문서는 Python 클라이언트 `rclpy`를 제공한다: https://do
 ## 8. 라이선스/생태계
 
 초기 오픈소스 코어(가칭 Apache 2.0), 추후 엔터프라이즈 관리 콘솔, 정책 스캐너, AI 산업 커넥터, 호스팅 관리형 서비스로 수익 모델을 설계할 수 있다. 언어 및 패키지 이름은 상표 조사 전 임시 사용.
+
+
+## Phase B1 (v0.2.0a1) 추가
+
+- `sori/typed_ir.py`: 허용된 표현식을 정적 타입 검사하고 실행 불가능한 JSON typed IR (`sori/ir/v1`)로 변환. Worker URL은 내보내지 않음.
+- `sori/openapi.py`: 라우트 접근 정책과 입력 범위에 맞는 OpenAPI 3.1 사양 작성. 워커 응답은 알 수 없는 객체로 기술.
+- `sori/__main__.py`: `sori new`, `dev`, `test`, `ir`, `openapi`, `build` 추가. 현재 build는 JSON 개발 아티팩트를 만드는 명령으로 실행 바이너리를 생성하지 않음.
+- Rust 구현 및 네이티브 IR 실행기는 향후 별도 마일스톤.
