@@ -10,6 +10,13 @@
 
 ## 단계 B — 검증 가능한 제품 (권장 0~3개월)
 
+### 상태 (2026-10-27)
+
+- **B1 완료 (코드·로컬 테스트 기준)**: 선언식 JSON API의 정적 타입 검사, typed IR v1, OpenAPI 3.1 문서 자동 생성, `sori new/dev/test/build` CLI(네이티브 빌드 아님), 실험적 VS Code highlighting, 해당 기능 테스트 10개 추가(총 29개).
+- **미완료**: Rust 런타임, LSP 진단, 정적 효과/리소스 권한 시스템, SBOM/SCA, fuzzing, 공정한 성능/보안 벤치마크 및 외부 감사.
+- `docs/MILESTONES.ko.md`를 작업 분해·수용기준의 기준 문서로 사용.
+
+
 - 3개 타깃 고객의 반복 문제 확인: 산업 AI gateway / 신뢰 가능한 에이전트 도구 API / 내부 업무 자동화
 - Rust 기반 HTTP runtime proof of concept + typed IR 고정
 - `sori new/dev/test/build`, VS Code highlighting, LSP 진단, 자동 OpenAPI

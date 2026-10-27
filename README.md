@@ -1,8 +1,28 @@
-# SORI v0.1 — Secure, Observable, Reliable, Intelligent (working title)
+# SORI — Secure, Observable, Reliable, Intelligent (working title)
 
-> **Status:** runnable research prototype, **NOT production audited**. SORI v0.1 is a small **domain-specific programming language** for JSON APIs, not yet a general-purpose language or a replacement for PHP, Rust, Python, Spring, Next.js, or Nuxt. The runtime is written in Python and uses an ASGI server. Rust, browser UI, ROS 2, real ML and an independently secured tool runtime are planned, not implemented.
+> **Current release:** `0.2.0a1` — Phase B milestone B1, typed IR + static type checks + OpenAPI 3.1 + CLI project scaffolding/build + experimental VS Code TextMate grammar. **NOT production audited.**
 
-## What actually works
+## Phase B1 — what is new (2026-10-27)
+
+New typed expression validation rejects invalid arithmetic and comparisons at **compile time**. `sori ir` emits a versioned deterministic JSON representation of route actions. `sori openapi` emits a conservative OpenAPI 3.1 specification with per-route bearer security, bounded input schemas, and worker outputs marked unknown. Worker invocation from `public` routes now fails compilation (breaking behavior change to the v0.1 prototype).
+
+```bash
+python -m sori new ./my-service
+python -m sori check ./my-service/app.sori
+python -m sori ir examples/hello.sori
+python -m sori openapi examples/hello.sori
+python -m sori build examples/hello.sori --out .sori-build
+python -m sori test --start-directory tests
+python -m sori dev examples/hello.sori  # alias of serve, not auto-reloading
+```
+
+**`build` creates three specification files** (`manifest.json`, `typed-ir.json`, `openapi.json`); **it does not create a native executable**. The Rust native runtime, production-grade policy engine, dependency locks/SBOM, and real AI/ROS 2 integration are still future milestones. See [`docs/MILESTONES.ko.md`](docs/MILESTONES.ko.md), [`docs/IR_SPEC.ko.md`](docs/IR_SPEC.ko.md).
+
+Minimal VS Code syntax highlighting grammar: `editors/vscode`. This is not a published extension, formatter, or language server.
+
+> **Status:** runnable research prototype, **NOT production audited**. SORI currently is a small **domain-specific programming language** for JSON APIs, not yet a general-purpose language or a replacement for PHP, Rust, Python, Spring, Next.js, or Nuxt. The runtime is written in Python and uses an ASGI server. Rust, browser UI, ROS 2, real ML and an independently secured tool runtime are planned, not implemented.
+
+## Existing v0.1 features (still supported)
 
 - `.sori` syntax parser; explicit `public` / `protected` policies for every route
 - Input type and bounds validation, unknown field rejection, duplicate JSON key rejection, 64-KiB body limit

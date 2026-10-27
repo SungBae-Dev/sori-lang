@@ -56,3 +56,12 @@
 - OWASP Top 10 2025: https://top10.owasp.org/2025/
 
 **주의:** 'SORI는 해당 CVE에 영향받지 않는다'는 주장은 영향을 받는 컴포넌트를 SORI v0.1 직접 의존성으로 사용하지 않는다는 매우 제한된 의미 이상으로 해석할 수 없다. 다른 취약점이 발생하지 않음을 보장하지 않는다.
+
+
+## v0.2-alpha 추가 및 제약
+
+- SORI 컴파일 단계에서 문자열과 숫자의 잘못된 연산, 비유한/과대 숫자 상수, public worker invocation을 거부.
+- OpenAPI 출력은 bearer 형식을 기술하나 생산 환경의 인증 서버, 리소스별 인가나 비밀키 로테이션을 제공하지는 않음.
+- Typed IR JSON은 원본 코드를 실행하지 않으나, 독립적인 샌드박스나 실행 엔진 자체가 아님.
+- 기존 v0.1에서 public worker 호출을 쓰던 코드는 v0.2에서 컴파일 실패함(고의적인 강화).
+- 입력 인증 외에 Rate limiting, tenant isolation, audit logging, dependency SCA 및 운영 비밀키 관리는 구현되지 않음.

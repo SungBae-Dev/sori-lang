@@ -1,0 +1,13 @@
+{
+  "name": "sori-language",
+  "displayName": "SORI Language (experimental)",
+  "description": "Syntax highlighting for the SORI .sori declarative API language",
+  "version": "0.2.0-alpha.1",
+  "publisher": "sori-community",
+  "engines": {"vscode": "^1.85.0"},
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [{"id": "sori", "aliases": ["SORI"], "extensions": [".sori"]}],
+    "grammars": [{"language": "sori", "scopeName": "source.sori", "path": "./syntaxes/sori.tmLanguage.json"}]
+  }
+}
