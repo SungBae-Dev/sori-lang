@@ -1,0 +1,58 @@
+# v0.1 선언형 DSL → SORI v0.3 통합 문법 마이그레이션
+
+## 요약
+
+```bash
+sori migrate examples/hello.sori --out hello-v03   # sori.toml + app.sori 생성, 보고서 출력
+sori check hello-v03
+SORI_API_TOKEN=<32자 이상> sori run hello-v03      # uvicorn (pip install -e '.[server]')
+```
+
+v0.1 파일은 **마이그레이션하지 않아도 계속 동작한다**. CLI 가 첫 줄 `app "..."` 을 보고 B1 경로로 처리한다 (`check/ir/openapi/manifest/build/serve/dev`).
+
+## 변환 규칙
+
+| v0.1 | v0.3 |
+|---|---|
+| `app "이름"` | `sori.toml` `[app] name = "이름"` |
+| `route POST "/p" protected:` | `route POST "/p" (body: PIn) guard bearer:` |
+| `route GET "/p" public:` | `route GET "/p" public:` |
+| `input name: str(1, 80)` | `type PIn:` 아래 `name: Str(1, 80)` |
+| `int(a, b)` / `float(a, b)` / `bool` | `Int(a, b)` / `Float(a, b)` / `Bool` |
+| `return {"k": input.x + 1}` | `return {"k": (body.x + 1)}` |
+| `True` / `False` / `None` | `true` / `false` / `none` |
+| `worker "n" "http://127.0.0.1:9010/invoke" timeout 1200` | `sori.toml` `[workers."n"] url = ...`, `timeout_ms = 1200` + `use std.worker` |
+| `invoke "n"` | `return worker.call("n", body)` |
+| JSON 전용 본문, 64KiB 제한 | `[security] body_types = ["json"]`, `max_body_kb = 64` |
+| `SORI_API_TOKEN` 32자 미만 → 기동 실패 | 동일 (`guard bearer` 사용 시) |
+
+## 동등성 검증
+
+`tests/test_migration_equivalence.py` 가 v0.1 런타임(`sori.runtime.create_app`)과 마이그레이션된 v0.3 앱(ASGI)에 **같은 요청 23개**를 보내 비교한다.
+
+- **같은지 확인하는 것**
+  - 상태 코드
+  - 200 응답 본문
+  - 라우트별 접근 정책(public / protected→bearer)
+- **요청 구성**
+  - 인증: 토큰 없음, 잘못된 토큰, 중복 Authorization 헤더
+  - 입력 범위·타입: 범위 밖, bool→int, 문자열 숫자, 선언 외 필드, 누락
+  - 본문 형식: 중복 키, NaN, 64KiB 초과, text/plain
+  - 라우팅: 404, 405
+  - 실제 워커 호출 3종
+
+## 자동 변환되지 않거나 동작이 다른 부분
+
+| 상황 | 차이 | 대응 |
+|---|---|---|
+| 입력이 없는 POST 라우트 | v0.1 은 본문이 정확히 `{}` 인지 검사, v0.3 은 본문을 읽지 않음 | 보고서에 `[동작 차이]` 로 표시. 검사가 필요하면 필드가 있는 type 을 선언 |
+| 오류 응답 본문 | v0.1 `{"error": "invalid value for name"}`, v0.3 은 한국어 메시지 + `request_id` | 상태 코드는 동일. 메시지 문자열에 의존하는 클라이언트는 수정 필요 |
+| 보안 헤더 | v0.1 CSP `default-src 'none'`, v0.3 기본 CSP 는 HTML 앱용 | `[security] csp = "default-src 'none'; frame-ancestors 'none'"` 로 동일하게 설정 가능 |
+| 헬스체크 | v0.1 은 사용자 라우트 `/health`, v0.3 은 추가로 `/healthz` `/readyz` `/metrics` 제공 | 기존 `/health` 라우트는 그대로 변환됨 |
+| 변환 불가 식 | v0.1 검증기가 허용하는 식은 모두 변환되지만, 실패 시 `[수동 수정 필요]` 와 위치 출력 | 생성 파일에 `error("migration: manual fix required", 500)` 이 들어가므로 배포 전 반드시 수정 |
+
+## 마이그레이션 후 권장 작업
+
+1. `sori audit` 로 권한·효과·접근 정책 확인
+2. `sori build --target spec` 로 OpenAPI·IR 확인
+3. `sori build --target oci` → `sori k8s` / `sori compose` 로 배포 산출물 생성 (워커 `command` 를 적으면 사이드카 자동 구성)

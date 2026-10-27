@@ -1,6 +1,68 @@
 # SORI — Secure, Observable, Reliable, Intelligent (working title)
 
-> **Current release:** `0.2.0a1` — Phase B milestone B1, typed IR + static type checks + OpenAPI 3.1 + CLI project scaffolding/build + experimental VS Code TextMate grammar. **NOT production audited.**
+> **Current version:** `0.3.0a1` (branch `integration/ara-sori-unified-core`, **under review, not merged**) — unified core: Ara general-purpose front end + versioned **Typed IR v2** + Python IR interpreter backend + experimental Rust backend slice. The B1 v0.1 DSL path is kept unchanged. **NOT production audited.**
+
+## v0.3.0a1 — unified core (proposed)
+
+```text
+.sori (unified syntax) → lexer/parser → static checks (scope, types, permissions, effects, route policy, HTML context)
+                       → Typed IR v2 (sori/ir/v2, deterministic JSON, JSON Schema)
+                       → Python Backend (IR interpreter, no eval/exec)  |  Rust Backend slice (runtime-rs, std-only)
+.sori (v0.1 DSL, first line `app "..."`) → B1 compiler/runtime, unchanged
+```
+
+```bash
+python -m sori new ./my-app                  # sori.toml + app.sori (v0.3 syntax)
+python -m sori check examples/todo --json    # JSON diagnostics (code, line, column, Korean message, hint)
+python -m sori test examples/todo            # .sori test blocks
+python -m sori dev examples/todo             # builtin dev server, detailed errors
+python -m sori run examples/secure-api       # uvicorn by default; refuses unsafe startup
+python -m sori ir examples/todo              # Typed IR v2
+python -m sori openapi examples/todo         # OpenAPI 3.1 generated from IR v2
+python -m sori build examples/todo --target spec   # typed-ir/openapi/manifest/tools JSON (default)
+python -m sori build examples/todo --target oci    # Docker build context + sori.lock (does not run docker)
+python -m sori k8s examples/secure-api       # manifests: permissions → NetworkPolicy, worker sidecars
+python -m sori migrate examples/hello.sori   # v0.1 DSL → v0.3 syntax + report
+```
+
+**What works (local tests, 96 passing):**
+
+- variables, functions, lambdas, loops, records, Korean identifiers
+- every route requires an access policy: `public` / `guard bearer` / user guard
+- bounded inputs are mandatory by default (`strict_inputs = true`)
+- strict JSON
+- `sql"..."` / `html"..."` safe types
+- permission-checked db/http/fs/env
+- effect analysis (public routes cannot reach workers, even through functions)
+- loopback-only Python workers with typed responses
+- AI tool schemas, periodic tasks
+- fail-closed production startup (`SORI_ENV=production`)
+- v0.1 → v0.3 migration verified on 23 requests
+- Python/Rust backend parity on 20 test vectors
+
+**What this does not do:**
+
+- `build` does **not** produce a native binary.
+- The IR interpreter is **not an OS-level sandbox**.
+- `use py` (in-process Python) is development-only.
+- The Rust backend runs only a slice: no std modules, user functions or guards; it returns 501 for anything unsupported.
+- It is slower than the old exec-based prototype (measured 1.9–19×; see ADR).
+- No fuzzing, external audit, or Docker image build was performed in this change.
+- It does not block all CVEs.
+
+Docs:
+
+- [ADR 0001](docs/adr/0001-unified-core.ko.md)
+- [feature duplication/conflict table](docs/INTEGRATION_ANALYSIS.ko.md)
+- [language](docs/LANGUAGE.ko.md)
+- [IR v2 spec](docs/IR_SPEC.ko.md)
+- [security & threat model](docs/SECURITY.ko.md)
+- [migration](docs/MIGRATION-0.3.ko.md)
+- [B2 Rust plan](docs/B2_RUST_PLAN.ko.md)
+
+---
+
+> The sections below describe **Phase B1 (`0.2.0a1`)** and the v0.1 DSL. They remain valid: v0.1 files run on the unchanged B1 path.
 
 ## Phase B1 — what is new (2026-10-27)
 
