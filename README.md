@@ -1,6 +1,6 @@
 # SORI — Secure, Observable, Reliable, Intelligent (working title)
 
-> **Current version:** `0.3.0a1` (branch `integration/ara-sori-unified-core`, ADR 0001 accepted 2026-10-27, **not merged yet**) — unified core: Ara general-purpose front end + versioned **Typed IR v2** + Python IR interpreter backend + experimental Rust backend slice. The B1 v0.1 DSL path is kept unchanged. **NOT production audited.**
+> **Current version:** `0.3.0a1` — **technical-validation alpha** (branch `integration/ara-sori-unified-core`, ADR 0001 accepted 2026-10-27, **not merged yet**). Not for production use until the beta gates in ADR 0001 §6.1 pass. — unified core: Ara general-purpose front end + versioned **Typed IR v2** + Python IR interpreter backend + experimental Rust backend slice. The B1 v0.1 DSL path is kept unchanged. **NOT production audited.**
 
 ## v0.3.0a1 — unified core (proposed)
 
