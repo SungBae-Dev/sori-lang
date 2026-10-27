@@ -1,0 +1,87 @@
+# Replace the example image with a registry image pinned by digest for production.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sori-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sori-demo
+  template:
+    metadata:
+      labels:
+        app: sori-demo
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sori
+          image: ghcr.io/REPLACE_ME/sori:prototype
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: SORI_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sori-token
+                  key: SORI_API_TOKEN
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 100m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+        - name: python-worker
+          image: ghcr.io/REPLACE_ME/sori:prototype
+          imagePullPolicy: IfNotPresent
+          command: ["python", "edge/worker.py"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sori-demo
+spec:
+  type: ClusterIP
+  selector:
+    app: sori-demo
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+---
+# Deny pod egress. Loopback communication inside the pod is still possible.
+# Additional ingress policy should be tailored to your ingress controller.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sori-deny-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: sori-demo
+  policyTypes: [Egress]
+  egress: []

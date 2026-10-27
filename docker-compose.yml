@@ -1,0 +1,30 @@
+services:
+  app:
+    build: .
+    image: sori:prototype
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      SORI_API_TOKEN: ${SORI_API_TOKEN:?Set a secret token of at least 32 characters}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+  worker:
+    image: sori:prototype
+    depends_on:
+      - app
+    network_mode: "service:app"
+    command: ["python", "edge/worker.py"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped

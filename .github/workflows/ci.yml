@@ -1,0 +1,20 @@
+name: SORI prototype checks
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Test compiler and runtime
+        run: python -m unittest discover -s tests -v
+      - name: Validate example SORI program
+        run: python -m sori check examples/hello.sori
+      - name: Compile Python sources
+        run: python -m compileall -q sori tests edge

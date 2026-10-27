@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=75,<90"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sori-language-prototype"
+version = "0.1.0"
+description = "SORI language and secure-by-default ASGI API prototype"
+requires-python = ">=3.12"
+dependencies = []
+license = {text = "Apache-2.0"}
+
+[project.optional-dependencies]
+server = ["uvicorn>=0.34,<1"]
+
+[project.scripts]
+sori = "sori.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["sori*"]

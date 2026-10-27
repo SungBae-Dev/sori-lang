@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+.env
+.env.*
+!*.example
+tests
+README.md
+docs
+k8s
+.github
