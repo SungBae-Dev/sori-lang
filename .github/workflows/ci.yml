@@ -1,4 +1,4 @@
-name: SORI compiler and API checks
+name: SORI compiler, backends and security checks
 on:
   push:
   pull_request:
@@ -7,21 +7,46 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
-      - name: Test compiler, typed IR, OpenAPI and runtime
+          python-version: ${{ matrix.python-version }}
+      - name: Install optional test dependencies (ASGI server, YAML parser)
+        run: python -m pip install 'uvicorn>=0.34,<1' 'pyyaml>=6,<7'
+      - name: Build Rust backend slice (runtime-rs, std-only)
+        run: cargo build --release --locked --manifest-path runtime-rs/Cargo.toml
+      - name: Run all tests (B1 legacy + unified core + security regression + backend parity)
+        env:
+          SORI_RT_BIN: runtime-rs/target/release/sori-rt
         run: python -m unittest discover -s tests -v
-      - name: Validate example SORI program
-        run: python -m sori check examples/hello.sori
-      - name: Generate typed artifacts
-        run: python -m sori build examples/hello.sori --out .sori-build
-      - name: Validate machine-readable artifacts
+      - name: B1 compatibility — validate v0.1 example and artifacts
         run: |
-          python -m json.tool .sori-build/typed-ir.json > /dev/null
-          python -m json.tool .sori-build/openapi.json > /dev/null
-          python -m json.tool .sori-build/manifest.json > /dev/null
+          python -m sori check examples/hello.sori
+          python -m sori build examples/hello.sori --out .sori-build-legacy
+          for f in typed-ir openapi manifest; do python -m json.tool .sori-build-legacy/$f.json > /dev/null; done
+      - name: Unified core — check, test and spec-build examples
+        env:
+          ADMIN_KEY: ci-admin-key
+        run: |
+          for ex in todo robot secure-api; do
+            python -m sori check examples/$ex
+            python -m sori test examples/$ex
+            python -m sori build examples/$ex --target spec --out .sori-build/$ex
+            for f in typed-ir openapi manifest tools; do python -m json.tool .sori-build/$ex/$f.json > /dev/null; done
+          done
+      - name: Migration smoke test (v0.1 → v0.3)
+        run: |
+          python -m sori migrate examples/hello.sori --out /tmp/hello-v03
+          python -m sori check /tmp/hello-v03
+      - name: Guard — no dynamic code execution in runtime paths (precise AST check is in tests)
+        run: |
+          if grep -rnE '(^|[^.A-Za-z_])(eval|exec|compile)\(' sori/ --include=*.py | grep -vE ':[0-9]+:\s*def (eval|exec|compile)\('; then
+            echo "dynamic execution call found"; exit 1
+          fi
       - name: Check Python compilation
         run: python -m compileall -q sori tests edge

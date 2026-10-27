@@ -10,3 +10,7 @@ README.md
 docs
 k8s
 .github
+runtime-rs/target
+.sori
+.sori-build
+examples/*/data
