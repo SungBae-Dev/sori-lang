@@ -60,8 +60,8 @@ v0.1 파일은 **마이그레이션하지 않아도 계속 동작한다**. CLI �
 | `/metrics` 기본 공개 | **기본 비공개.** `SORI_METRICS_TOKEN`(32자 이상)이 있을 때만 `Authorization: Bearer` 로 응답, 없으면 404 | 내부 지표 노출 방지 |
 | `[security] metrics = true/false` | `"token"`(기본) · `"public"` · `"off"`. `true` → `"token"`, `false` → `"off"` 로 읽음 | 공개는 명시적으로만 |
 | `sori.lock` 은 .sori·sori.toml·워커 파일만 해시 | 이미지에 들어가는 파일 전부를 해시: `[app] static` 폴더, `[permissions] fs_read` 경로 포함. 해시되지 않은 파일은 이미지에 복사하지 않음 | 정적 리소스 변조 탐지 |
-| `sori k8s` 가 `net` 권한이 있으면 NetworkPolicy 에 '모든 목적지 TCP 443' 허용을 넣음 | **넣지 않음.** 기본(`--egress none`)은 클러스터 DNS 만 허용하고 외부 이그레스는 막는다. Cilium 이면 `--egress cilium` 으로 net 권한의 호스트:포트만 여는 CiliumNetworkPolicy 를 추가 | 표준 NetworkPolicy 는 도메인 단위 허용을 표현할 수 없고, 허용 규칙은 합집합이라 열린 443 이 FQDN 정책을 무력화 |
-| sori.toml 값 형식 제한 없음 | 경로(`fs_read`·`fs_write`·`db`·`static`)는 영문·숫자·`_ . / -` 만, `..` 금지. env·secrets 는 환경변수 이름 형식, net 은 `호스트[:포트]` 또는 `http(s)://호스트[:포트]`, python 은 패키지 이름 형식, 워커 이름은 영문·숫자·`_ -`. 위반 시 E204 | 값이 Dockerfile·YAML 에 들어가므로 주입 방지 |
+| `sori k8s` 가 `net` 권한이 있으면 NetworkPolicy 에 '모든 목적지 TCP 443' 허용을 넣음 | **넣지 않음.** 기본(`--egress none`)은 클러스터 DNS 만 허용하고 외부 이그레스는 막는다 (kind 실클러스터 CI 로 검증). Cilium 이면 `--egress cilium` 으로 net 권한의 호스트:포트만 여는 CiliumNetworkPolicy 를 추가 — **이 정책은 실제 Cilium 클러스터에서 검증하지 않았으므로 적용 후 허용·차단을 직접 확인** | 표준 NetworkPolicy 는 도메인 단위 허용을 표현할 수 없고, 허용 규칙은 합집합이라 열린 443 이 FQDN 정책을 무력화 |
+| sori.toml 값 형식 제한 없음, `fs_read = ["/etc"]` 같은 절대 경로 권한 허용 | 경로(`fs_read`·`fs_write`·`db`·`static`)는 **프로젝트 기준 상대 경로만**, 영문·숫자·`_ . / -` 만, `..` 금지, 프로젝트 밖을 가리키는 심볼릭 링크 금지. env·secrets 는 환경변수 이름 형식, net 은 `호스트[:포트]` 또는 `http(s)://호스트[:포트]`, python 은 패키지 이름 형식, 워커 이름은 영문·숫자·`_ -`. 위반 시 E204 | 값이 Dockerfile·YAML 에 들어가므로 주입 방지 |
 
 `sori k8s` 는 기본(token) 모드에서 `prometheus.io/scrape` 어노테이션을 넣지 않는다. Prometheus Operator 를 쓴다면 ServiceMonitor 의 `bearerTokenSecret` 에 같은 토큰을 지정한다. 공개 스크랩이 꼭 필요하면 `[security] metrics = "public"` 을 쓰고, 네트워크 정책으로 접근을 제한한다.
 

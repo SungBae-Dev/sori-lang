@@ -25,7 +25,7 @@ python -m sori k8s examples/secure-api       # manifests: permissions → Networ
 python -m sori migrate examples/hello.sori   # v0.1 DSL → v0.3 syntax + report
 ```
 
-**What works (local tests, 119 passing):**
+**What works (local tests, 121 passing):**
 
 - variables, functions, lambdas, loops, records, Korean identifiers
 - every route requires an access policy: `public` / `guard bearer` / user guard
@@ -39,7 +39,8 @@ python -m sori migrate examples/hello.sori   # v0.1 DSL → v0.3 syntax + report
 - fail-closed production startup (`SORI_ENV=production`): lock required, no bypass switch, uvicorn only
 - `/metrics` private by default (`SORI_METRICS_TOKEN` bearer), lock covers static/fs_read files
 - sori.toml values that end up in Dockerfile/YAML are validated (E204), Dockerfile uses exec-form `RUN`
-- `sori k8s`: NetworkPolicy egress is cluster DNS only; FQDN egress only via `--egress cilium` (verified on a kind cluster in CI)
+- `sori k8s`: NetworkPolicy egress is cluster DNS only (verified on a kind cluster in CI). FQDN egress only via `--egress cilium`; that CiliumNetworkPolicy has only unit tests, it has not been verified on a real Cilium cluster
+- file permissions (`fs_read`/`fs_write`) are project-relative only; absolute paths, `..` and symlinks escaping the project are refused
 - v0.1 → v0.3 migration verified on 23 requests
 - Python/Rust backend parity on 20 test vectors
 
