@@ -1,6 +1,6 @@
 # SORI — Secure, Observable, Reliable, Intelligent (working title)
 
-> **Current version:** `0.3.0a1` (branch `integration/ara-sori-unified-core`, **under review, not merged**) — unified core: Ara general-purpose front end + versioned **Typed IR v2** + Python IR interpreter backend + experimental Rust backend slice. The B1 v0.1 DSL path is kept unchanged. **NOT production audited.**
+> **Current version:** `0.3.0a1` (branch `integration/ara-sori-unified-core`, ADR 0001 accepted 2026-10-27, **not merged yet**) — unified core: Ara general-purpose front end + versioned **Typed IR v2** + Python IR interpreter backend + experimental Rust backend slice. The B1 v0.1 DSL path is kept unchanged. **NOT production audited.**
 
 ## v0.3.0a1 — unified core (proposed)
 
@@ -51,7 +51,12 @@ python -m sori migrate examples/hello.sori   # v0.1 DSL → v0.3 syntax + report
 - `use py` (in-process Python) is development-only.
 - The Rust backend runs only a slice: no std modules, user functions or guards; it returns 501 for anything unsupported.
 - CPU-heavy code is slower than native Python: 2.6–11× in measurements. Web routes measured equal or faster. See ADR 0001 §4.
-- No security fuzzing or external audit has been done. Docker image build and hardened run happen in CI (`oci-image` job), not locally.
+- Alpha scope (ADR 0001 §6) deliberately excludes these. The first three are beta entry gates; external audit is required before production use or 1.0:
+  - security fuzzing
+  - image vulnerability scanning
+  - real-Cilium verification of `--egress cilium` (experimental until then)
+  - external audit
+- Docker image build and hardened run happen in CI (`oci-image` job), not locally.
 - It does not block all CVEs.
 
 Docs:

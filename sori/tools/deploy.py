@@ -437,7 +437,7 @@ spec:
             rules.append(f"    - toFQDNs:\n        - {sel}\n      toPorts:\n        - ports: [{{port: {_q(p)}, protocol: TCP}}]")
         fqdn_rules = "\n".join(rules)
         deploy += f"""---
-# Cilium: 도메인 단위 이그레스 — net 권한의 호스트:포트만 (표준 NetworkPolicy 와 합집합이어도 열린 규칙 없음)
+# [실험 기능] Cilium: 도메인 단위 이그레스 — net 권한의 호스트:포트만 (표준 NetworkPolicy 와 합집합이어도 열린 규칙 없음)
 # 주의: 이 정책은 생성 구조만 단위 테스트로 확인했고, 실제 Cilium 클러스터에서 집행을 검증하지는 않았어요.
 #       적용 후 허용 호스트 접속·그 외 차단을 직접 확인하세요 (CI 의 실클러스터 검증은 기본 NetworkPolicy 만).
 apiVersion: cilium.io/v2

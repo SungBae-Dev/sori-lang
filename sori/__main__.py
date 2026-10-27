@@ -321,7 +321,7 @@ def main(argv=None) -> int:
     sp.add_argument('--image')
     sp.add_argument('--replicas', type=int, default=2)
     sp.add_argument('--egress', choices=('none', 'cilium'), default='none',
-                    help='외부 이그레스: none(기본, DNS 만) | cilium(CiliumNetworkPolicy toFQDNs 로 net 권한만)')
+                    help='외부 이그레스: none(기본, DNS 만) | cilium(실험적 — CiliumNetworkPolicy toFQDNs 로 net 권한만, 실제 Cilium 미검증)')
     sp = add('compose', cmd_gen('compose'), 'Docker Compose (앱 + 워커 사이드카)')
     sp.add_argument('--image')
     sp = add('new', cmd_new, '새 프로젝트 (sori.toml + app.sori)', path=False)
