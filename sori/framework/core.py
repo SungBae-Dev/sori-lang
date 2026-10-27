@@ -17,6 +17,14 @@ class ExpectFailed(BaseException):
     code = "R900"
 
 
+class ResourceLimit(BaseException):
+    """실행 상한 초과 — BaseException 이라 사용자 try/catch 로 삼킬 수 없다."""
+    code = "R300"
+
+
+MAX_SEQ = 10_000_000  # 한 번에 만들 수 있는 목록/문자열 크기 상한 (메모리 DoS 방지)
+
+
 class SoriTypeError(Exception):
     code = "R100"
 
@@ -235,11 +243,15 @@ def sql(lits, exprs):
 
 
 _SAFE_SCHEMES = {"http", "https", "mailto", "tel"}
+_URL_CTRL = re.compile(r"[\x00-\x20\x7f]")
+_URL_SCHEME = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):")
+_INT_TEXT = re.compile(r"-?\d{1,18}")
+_CRLF = re.compile(r"[\r\n]")
 
 
 def sanitize_url(s):
-    t = re.sub(r"[\x00-\x20\x7f]", "", s)
-    m = re.match(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):", t)
+    t = _URL_CTRL.sub("", s)
+    m = _URL_SCHEME.match(t)
     if m and m.group(1).lower() not in _SAFE_SCHEMES:
         return "#blocked-unsafe-url"
     return s
@@ -375,7 +387,7 @@ class _Int(_T):
         return isinstance(v, int) and not isinstance(v, bool)
 
     def _coerce(self, v, label):
-        if isinstance(v, str) and not STRICT.get() and re.fullmatch(r"-?\d{1,18}", v.strip()):
+        if isinstance(v, str) and not STRICT.get() and _INT_TEXT.fullmatch(v.strip()):
             return int(v.strip())
         if self.ok(v) and abs(v) < 10 ** 18:
             return v
@@ -664,7 +676,22 @@ class RecordBase:
                 vals[name] = t.coerce(data[name], f"{label}.{name}")
             elif d is NODEF and not isinstance(t, Opt):
                 raise SoriInputError(f"'{label}.{name}' 이(가) 필요해요")
-        return cls(**vals)
+        return cls._from_coerced(vals)
+
+    @classmethod
+    def _from_coerced(cls, vals):
+        """coerce 를 통과한 값(타입·범위 검증 완료)으로 만든다 — __init__ 과 같은 규칙, 필드 재검사만 생략.
+        기본값은 이전과 같이 복사 후 검사한다."""
+        obj = object.__new__(cls)
+        for name, t, d in cls._fields:
+            if name in vals:
+                v = vals[name]
+            elif d is NODEF:
+                raise SoriTypeError(f"{cls.__name__} 을(를) 만들려면 '{name}' 이(가) 필요해요")
+            else:
+                v = t.check(_copy.deepcopy(d), f"{cls.__name__}.{name}")
+            object.__setattr__(obj, name, v)
+        return obj
 
     @classmethod
     def schema(cls):
@@ -779,7 +806,7 @@ def respond(status, body=None, headers=None, content_type=None):
     if not (100 <= int(status) <= 599):
         raise SoriTypeError("HTTP 상태 코드는 100~599 여야 해요")
     for k, v in (headers or {}).items():
-        if re.search(r"[\r\n]", str(k) + str(v)):
+        if _CRLF.search(str(k) + str(v)):
             raise SecurityError("헤더에 줄바꿈 문자가 있어요 (CRLF 인젝션 차단)")
     return Response(status, body, headers, content_type)
 
@@ -788,7 +815,7 @@ def redirect(url, status=303, external=False):
     url = tostr(url)
     if not external and (not url.startswith("/") or url.startswith("//") or url.startswith("/\\")):
         raise SecurityError(f"외부 주소로의 리다이렉트는 external=true 가 필요해요: {url[:60]} (오픈 리다이렉트 차단)")
-    if re.search(r"[\r\n]", url):
+    if _CRLF.search(url):
         raise SecurityError("리다이렉트 주소에 줄바꿈 문자가 있어요")
     return Response(status, None, {"Location": url})
 
@@ -827,13 +854,20 @@ def _print(*args):
     print(" ".join(tostr(a) for a in args), flush=True)
 
 
+def _range(*a):
+    r = range(*a)
+    if len(r) > MAX_SEQ:
+        raise ResourceLimit(f"range 가 너무 커요 (최대 {MAX_SEQ:,}개)")
+    return list(r)
+
+
 def _sorted(xs, key=None, reverse=False):
     return sorted(xs, key=key, reverse=reverse)
 
 
 BUILTINS = {
     "print": _print, "len": len, "str": tostr, "int": _int, "float": float, "bool": bool,
-    "range": lambda *a: list(range(*a)), "list": list, "sorted": _sorted, "reversed": lambda xs: list(reversed(xs)),
+    "range": _range, "list": list, "sorted": _sorted, "reversed": lambda xs: list(reversed(xs)),
     "sum": sum, "min": min, "max": max, "abs": abs, "round": round,
     "enumerate": lambda xs, start=0: list(enumerate(xs, start)), "zip": lambda *a: list(zip(*a)),
     "any": any, "all": all, "map": _map, "filter": _filter, "type_of": type_name,
