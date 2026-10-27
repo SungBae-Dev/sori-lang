@@ -1,0 +1,67 @@
+# 피지컬 AI 예제: 50Hz PID 제어 루프 + 텔레메트리 API
+# 실제 로봇이라면 sensor()/actuate() 를 'use py rclpy'(ROS 2) 나 시리얼 드라이버로 바꾸면 돼요.
+use py numpy as np
+
+var target = 1.0
+var position = 0.0
+var velocity = 0.0
+var integral = 0.0
+var prev_error = 0.0
+var history = []
+
+let KP = 2.0
+let KI = 0.5
+let KD = 0.1
+let DT = 0.02
+
+type Setpoint:
+    """목표 위치 — 범위 밖 값은 런타임까지 오지도 않아요"""
+    value: Float(-10, 10)
+
+fn sensor() -> Float:
+    """노이즈 섞인 위치 센서 (시뮬레이션)"""
+    return position + float(np.random.normal(0.0, 0.002))
+
+fn actuate(u: Float):
+    """1차 지연 액추에이터 모델"""
+    velocity += (u - velocity) * 0.2
+    position += velocity * DT
+
+fn step():
+    """제어 한 주기: 측정 → PID → 출력 제한 → 구동"""
+    let measured = sensor()
+    let e = target - measured
+    integral += e * DT
+    let derivative = (e - prev_error) / DT
+    prev_error = e
+    let u = float(np.clip(KP * e + KI * integral + KD * derivative, -5.0, 5.0))
+    actuate(u)
+    history.append(position)
+    if len(history) > 500:
+        history = history[-500:]
+
+task control every 20 ms:
+    """50Hz 제어 루프 — 마감 초과/지터는 /metrics 로 노출"""
+    step()
+
+route GET "/state" public:
+    """현재 상태 텔레메트리"""
+    let recent = np.array(history[-50:]) if len(history) > 0 else np.zeros(1)
+    return {target: target, position: position, velocity: velocity, mean_recent: float(np.mean(recent)), std_recent: float(np.std(recent)), samples: len(history)}
+
+route POST "/target" (body: Setpoint) public:
+    """목표 위치 변경"""
+    target = body.value
+    integral = 0.0
+    return {target: target}
+
+test "PID 가 목표에 수렴한다":
+    var i = 0
+    while i < 600:
+        step()
+        i += 1
+    expect(abs(position - target) < 0.05, "수렴 실패: position={position}")
+
+test "범위 밖 목표는 거부된다":
+    expect(client.post("/target", json={value: 99.0}).status == 400)
+    expect(client.post("/target", json={value: "abc"}).status == 400)

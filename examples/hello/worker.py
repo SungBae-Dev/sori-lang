@@ -1,9 +1,10 @@
-"""Demonstration Python sidecar using the SORI worker protocol.
+"""Demonstration Python sidecar using the SORI worker protocol (std.worker).
 
 Replace the scoring logic with a trusted ONNX, PyTorch, or ROS 2 adapter.
 This stdlib HTTP server is strictly for demo/development; bind loopback only.
 """
 import json
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -34,4 +35,4 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    HTTPServer(('127.0.0.1', 9010), Handler).serve_forever()
+    HTTPServer(('127.0.0.1', int(os.environ.get('SORI_WORKER_PORT', '9010'))), Handler).serve_forever()

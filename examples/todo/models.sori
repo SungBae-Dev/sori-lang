@@ -1,0 +1,19 @@
+# 같은 폴더의 .sori 파일들은 하나의 네임스페이스를 공유해요 (Go 패키지처럼).
+
+type Todo:
+    """할 일"""
+    id: Int
+    title: Str(1, 200)
+    done: Bool = false
+
+type NewTodo:
+    """새 할 일 입력 — 선언된 필드 외에는 받지 않아요"""
+    title: Str(1, 200)
+
+type ParseIn:
+    text: Str(1, 2000)
+
+type TaskInfo:
+    """자연어 문장에서 뽑아낸 할 일"""
+    title: Str(1, 200)
+    minutes: Int(0, 1440)?

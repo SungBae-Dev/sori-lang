@@ -1,2 +1,2 @@
-"""SORI language and API framework prototype."""
-__version__ = '0.1.0'
+"""SORI — 보안을 기본값으로 갖춘 AI 네이티브 언어/프레임워크 (MVP)."""
+__version__ = "0.1.0"

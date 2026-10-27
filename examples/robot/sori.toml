@@ -1,0 +1,10 @@
+[app]
+name = "sori-robot"
+port = 8081
+access_log = false
+
+[security]
+strict_inputs = true
+
+[permissions]
+python = ["numpy"]   # 파이썬 생태계(numpy/torch/rclpy 등)는 선언한 패키지만 사용 가능

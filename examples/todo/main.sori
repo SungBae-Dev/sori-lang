@@ -1,0 +1,77 @@
+use std.db
+use std.env
+use std.fs
+use std.log
+use std.ai
+
+db.exec(sql"CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)")
+
+guard admin(req):
+    """X-Admin-Key 헤더가 ADMIN_KEY 와 같아야 통과 (상수 시간 비교)"""
+    let key = env.secret("ADMIN_KEY")
+    return key and key == req.header("x-admin-key", "")
+
+fn layout(title: Str, body: Html) -> Html:
+    return html"""<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>{title}</title>
+<link rel="stylesheet" href="/static/app.css"></head>
+<body><main>{body}</main></body></html>"""
+
+fn item(t: Todo) -> Html:
+    let cls = "done" if t.done else "open"
+    return html"""<li class="{cls}"><a href="/api/todos/{t.id}">{t.title}</a></li>"""
+
+route GET "/" public:
+    """할 일 목록 페이지"""
+    let todos = db.all(sql"SELECT id, title, done FROM todos ORDER BY id", Todo)
+    return layout("SORI Todo", html"""<h1>할 일</h1>
+<form method="post" action="/todos"><input name="title" required> <button>추가</button></form>
+<ul>{map(todos, item)}</ul>""")
+
+route POST "/todos" (body: NewTodo) public:
+    """폼으로 할 일 추가 (같은 출처에서만 허용 — CSRF 차단)"""
+    db.exec(sql"INSERT INTO todos (title) VALUES ({body.title})")
+    return redirect("/")
+
+route GET "/api/todos" public:
+    """할 일 목록 (JSON)"""
+    return db.all(sql"SELECT id, title, done FROM todos ORDER BY id", Todo)
+
+route GET "/api/todos/{id}" (id: Int(1, 1000000000)) public:
+    """할 일 하나 조회"""
+    let t = db.one(sql"SELECT id, title, done FROM todos WHERE id = {id}", Todo)
+    if t == none:
+        error("없는 할 일이에요", 404)
+    return t
+
+route POST "/api/todos" (body: NewTodo) guard admin:
+    """할 일 추가 (관리자)"""
+    let r = db.exec(sql"INSERT INTO todos (title) VALUES ({body.title})")
+    log.info("todo created", id=r.last_id)
+    return respond(201, Todo(id=r.last_id, title=body.title))
+
+route PATCH "/api/todos/{id}/done" (id: Int(1, 1000000000)) guard admin:
+    """완료 처리 (관리자)"""
+    db.exec(sql"UPDATE todos SET done = 1 WHERE id = {id}")
+    return db.one(sql"SELECT id, title, done FROM todos WHERE id = {id}", Todo)
+
+route GET "/search" (q: Str(1, 100)) public:
+    """제목 검색 — 무엇을 넣어도 SQL 로 해석되지 않아요"""
+    let pattern = "%{q}%"
+    return db.all(sql"SELECT id, title, done FROM todos WHERE title LIKE {pattern} ORDER BY id", Todo)
+
+route GET "/hello" (name: Str(1, 40) = "손님") public:
+    """인사 페이지 (XSS 방어 시연)"""
+    return layout("안녕", html"<p>안녕하세요, {name}님!</p>")
+
+route GET "/link" (url: Str(1, 2048)) public:
+    """링크 표시 (javascript: URL 무력화 시연)"""
+    return html"""<a href="{url}">이동</a>"""
+
+route GET "/file" (path: Str(1, 256)) public:
+    """content 폴더 파일 읽기 (경로 탈출 차단 시연)"""
+    return fs.read(path)
+
+route POST "/api/parse" (body: ParseIn) public:
+    """자연어 → TaskInfo. AI 출력도 선언된 타입으로 검증돼요"""
+    return ai.extract(TaskInfo, body.text)

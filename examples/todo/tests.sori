@@ -1,0 +1,74 @@
+use std.env
+
+test "목록 페이지가 열린다":
+    let r = client.get("/")
+    expect(r.status == 200)
+    expect("할 일" in r.text)
+
+test "JSON API 로 조회할 수 있다":
+    let r = client.get("/api/todos")
+    expect(r.status == 200)
+    expect(type_of(r.json()) == "List")
+
+test "없는 id 는 404":
+    expect(client.get("/api/todos/999999").status == 404)
+
+test "숫자가 아닌 id 는 400 (타입 검증)":
+    expect(client.get("/api/todos/abc").status == 400)
+
+test "SQL 인젝션은 데이터로만 취급된다":
+    client.post("/todos", form={title: "우유 사기"})
+    expect(len(client.get("/search?q=%EC%9A%B0%EC%9C%A0").json()) >= 1, "정상 검색이 실패함")
+    let r = client.get("/search?q=%27%20OR%201%3D1%20--")
+    expect(r.status == 200)
+    expect(len(r.json()) == 0, "인젝션이 전체 행을 반환함")
+
+test "XSS 는 이스케이프된다":
+    let r = client.get("/hello?name=%3Cscript%3Ealert(1)%3C/script%3E")
+    expect("<script>" not in r.text)
+    expect("&lt;script&gt;" in r.text)
+
+test "javascript: 링크는 무력화된다":
+    let r = client.get("/link?url=javascript:alert(1)")
+    expect("javascript:" not in r.text)
+
+test "관리자 키 없이는 쓰기 불가":
+    expect(client.post("/api/todos", json={title: "해킹"}).status == 403)
+
+test "관리자 키가 있으면 추가된다":
+    let key = env.secret("ADMIN_KEY")
+    if not key:
+        return
+    let r = client.post("/api/todos", json={title: "보고서"}, headers={"x-admin-key": key})
+    expect(r.status == 201)
+    expect(r.json()["title"] == "보고서")
+
+test "선언되지 않은 필드는 거부된다 (mass assignment)":
+    expect(client.post("/todos", json={title: "x", done: true}).status == 400)
+
+test "다른 출처의 POST 는 거부된다 (CSRF)":
+    let r = client.post("/todos", form={title: "csrf"}, headers={origin: "https://evil.example"})
+    expect(r.status == 403)
+
+test "같은 출처 폼 POST 는 리다이렉트된다":
+    let r = client.post("/todos", form={title: "장보기"})
+    expect(r.status == 303)
+    expect(r.header("location") == "/")
+
+test "경로 탈출은 차단된다":
+    expect(client.get("/file?path=../sori.toml").status == 403)
+    expect(client.get("/file?path=./content/readme.txt").status == 200)
+
+test "쿼리 파라미터 중복(오염)은 거부된다":
+    expect(client.get("/search?q=a&q=b").status == 400)
+
+test "보안 헤더가 기본으로 붙는다":
+    let r = client.get("/")
+    expect(r.header("content-security-policy") != none)
+    expect(r.header("x-frame-options") == "DENY")
+    expect(r.header("x-content-type-options") == "nosniff")
+
+test "AI 추출 결과도 타입 검증된다":
+    let r = client.post("/api/parse", json={text: "보고서 작성 30분"})
+    expect(r.status == 200)
+    expect(r.json()["minutes"] == 30)
