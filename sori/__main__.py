@@ -152,7 +152,11 @@ def cmd_run(a, dev=False):
     if errs:
         print(f'✗ 오류 {len(errs)}개 — 실행하지 않았어요', file=sys.stderr)
         return 1
-    problems = app.startup_problems('serve')
+    has_routes = any(True for _ in app.ir['routes'])
+    server = None
+    if has_routes:
+        server = 'builtin' if dev and not a.server else (a.server or app.config.get('app', {}).get('server', 'uvicorn'))
+    problems = app.startup_problems('serve', server=server)
     if problems:
         for p in problems:
             print(f'✗ 기동 거부: {p}', file=sys.stderr)
@@ -162,14 +166,11 @@ def cmd_run(a, dev=False):
     if app.router.routes:
         port = a.port or int(os.environ.get('PORT', app.config.get('app', {}).get('port', 8080)))
         host = a.host or ('0.0.0.0' if app.env == 'production' else '127.0.0.1')
-        server = 'builtin' if dev and not a.server else (a.server or app.config.get('app', {}).get('server', 'uvicorn'))
         if server == 'uvicorn':
             from .framework.asgi import serve_uvicorn
             serve_uvicorn(app, host, port)
         else:
-            if app.env == 'production':
-                print('⚠ 내장 서버는 개발용이에요. 운영에서는 server = "uvicorn" 을 쓰세요', file=sys.stderr)
-            serve(app, host, port)
+            serve(app, host, port)  # 내장 서버: 개발 전용 (운영에서는 위 startup_problems 가 거부)
     elif app.tasks:
         runners = app.start_tasks()
         print(f'▶ 주기 작업 {len(runners)}개 실행 중 (Ctrl+C 로 종료)', file=sys.stderr)

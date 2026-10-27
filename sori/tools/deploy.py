@@ -190,10 +190,10 @@ WORKDIR /app
 {pip}COPY runtime/ /opt/sori/
 COPY app/ /app/
 ENV PYTHONPATH=/opt/sori
-USER 10001:10001
+{writable}USER 10001:10001
 EXPOSE {port}
 HEALTHCHECK --interval=10s --timeout=2s --retries=3 CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/healthz', timeout=2)"]
-ENTRYPOINT ["python", "-m", "sori", "run", "/app", "--host", "0.0.0.0", "--server", "{server}"]
+ENTRYPOINT ["python", "-m", "sori", "run", "/app", "--host", "0.0.0.0", "--server", "uvicorn"]
 """
 
 
@@ -216,50 +216,63 @@ def build_oci(app, out=None):
     if os.path.exists(out):
         shutil.rmtree(out)
     os.makedirs(os.path.join(out, "app"))
-    pkg_src = os.path.dirname(os.path.abspath(__file__))
-    shutil.copytree(pkg_src, os.path.join(out, "runtime", "sori"), ignore=shutil.ignore_patterns("__pycache__"))
-    for rel in list(app.sources) + app.extra_files() + ["sori.toml", "sori.lock"]:
+    # sori 패키지 전체 (CLI·컴파일러·런타임·도구). 이 파일은 sori/tools/ 에 있으므로 한 단계 위가 패키지 루트.
+    pkg_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    shutil.copytree(pkg_src, os.path.join(out, "runtime", "sori"), ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # 프로젝트 파일: sori.lock 이 해시한 범위와 정확히 같은 목록만 복사 (해시되지 않은 파일은 이미지에 없음)
+    for rel in app.deploy_files() + ["sori.lock"]:
         src = os.path.join(app.root, rel)
-        if os.path.exists(src):
-            dst = os.path.join(out, "app", rel)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
-    static = app.config.get("app", {}).get("static")
-    if static and os.path.isdir(os.path.join(app.root, static)):
-        shutil.copytree(os.path.join(app.root, static), os.path.join(out, "app", static))
+        dst = os.path.join(out, "app", rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
     pip = ""
     pins = [f"{k}=={v}" for k, v in lock["python"].items() if v]
-    server = app.config.get("app", {}).get("server", "uvicorn")
-    if server == "uvicorn":
-        try:
-            pins.append(f"uvicorn=={importlib.metadata.version('uvicorn')}")
-        except importlib.metadata.PackageNotFoundError:
-            pins.append("uvicorn>=0.34,<1")
+    # 운영 이미지는 항상 uvicorn (내장 서버는 개발 전용 — 운영 기동 시 거부됨)
+    try:
+        pins.append(f"uvicorn=={importlib.metadata.version('uvicorn')}")
+    except importlib.metadata.PackageNotFoundError:
+        pins.append("uvicorn>=0.34,<1")
     if pins:
         with open(os.path.join(out, "requirements.txt"), "w") as f:
             f.write("\n".join(pins) + "\n")
         pip = ("COPY requirements.txt /tmp/requirements.txt\n"
                "RUN pip install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt && rm /tmp/requirements.txt\n")
     port = int(app.config.get("app", {}).get("port", 8080))
+    writable = writable_dirs(app)
+    wr = ""
+    if writable:
+        paths = " ".join("/app/" + w for w in writable)
+        wr = f"RUN mkdir -p {paths} && chown 10001:10001 {paths}\n"
     with open(os.path.join(out, "Dockerfile"), "w") as f:
-        f.write(DOCKERFILE.format(port=port, pip=pip, server=server))
+        f.write(DOCKERFILE.format(port=port, pip=pip, writable=wr))
     with open(os.path.join(out, ".dockerignore"), "w") as f:
         f.write("**/__pycache__\n**/*.pyc\n.git\n")
     return out
 
 
 # ---------------------------------------------------------------- Kubernetes
+def writable_dirs(app):
+    """쓰기 권한이 필요한 경로 (fs_write + sqlite 파일의 디렉터리). 이미지에서는 10001 소유, k8s 에서는 emptyDir."""
+    perms = app.perms
+    out = set(perms.get("fs_write", [])) | {os.path.dirname(d[len("sqlite:"):]) for d in perms.get("db", [])
+                                             if d.startswith("sqlite:") and d != "sqlite::memory:"}
+    clean = []
+    for w in sorted(out):
+        w = os.path.normpath(w) if w else ""
+        if w and w != "." and not w.startswith("..") and not os.path.isabs(w):
+            clean.append(w)
+    return clean
+
+
 def k8s(app, image=None, replicas=2):
     name = re.sub(r"[^a-z0-9-]", "-", app.config.get("app", {}).get("name", os.path.basename(app.root)).lower()).strip("-") or "sori-app"
     port = int(app.config.get("app", {}).get("port", 8080))
     image = image or f"{name}:latest"
     perms = app.perms
-    writable = sorted(set(perms.get("fs_write", [])) | {os.path.dirname(d[len("sqlite:"):]) for d in perms.get("db", [])
-                                                         if d.startswith("sqlite:") and d != "sqlite::memory:"})
-    writable = [w for w in writable if w and w != "."]
+    writable = writable_dirs(app)
     mounts, vols = [], []
     for i, w in enumerate(writable):
-        mounts.append(f"            - name: data{i}\n              mountPath: /app/{w.lstrip('./')}")
+        mounts.append(f"            - name: data{i}\n              mountPath: /app/{w}")
         vols.append(f"        - name: data{i}\n          emptyDir: {{}}")
     mounts.append("            - name: tmp\n              mountPath: /tmp")
     vols.append("        - name: tmp\n          emptyDir: {}")
@@ -302,6 +315,13 @@ def k8s(app, image=None, replicas=2):
     egress = "    - to:\n        - namespaceSelector: {}\n      ports:\n        - protocol: UDP\n          port: 53\n        - protocol: TCP\n          port: 53\n"
     if hosts:
         egress += "    - ports:\n        - protocol: TCP\n          port: 443\n"
+    from ..framework.app import metrics_mode
+    if metrics_mode(app.config) == "public":
+        annotations = f'      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "{port}"\n'
+    else:
+        # 기본(token): /metrics 는 SORI_METRICS_TOKEN Bearer 가 있어야 응답 — 어노테이션 기반 무인증 스크랩은 쓰지 않음.
+        # Prometheus Operator 를 쓴다면 ServiceMonitor 의 bearerTokenSecret 으로 같은 토큰을 지정하세요.
+        annotations = '      annotations:\n        sori.dev/metrics: "token (SORI_METRICS_TOKEN, ServiceMonitor bearerTokenSecret)"\n'
     deploy = f"""# SORI 가 sori.toml 권한에서 생성한 매니페스트 (최소 권한)
 apiVersion: apps/v1
 kind: Deployment
@@ -315,10 +335,7 @@ spec:
   template:
     metadata:
       labels: {{app: {name}}}
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "{port}"
-    spec:
+{annotations}    spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -443,6 +460,7 @@ server = "uvicorn"     # 운영 기본: ASGI(uvicorn). 의존성 없는 내장 �
 
 [security]
 strict_inputs = true   # 범위 없는 외부 입력은 컴파일 오류 (기본값, 운영에서 끌 수 없음)
+metrics = "token"      # /metrics 는 SORI_METRICS_TOKEN Bearer 가 있어야 응답 (기본). "public" | "off"
 
 [permissions]
 # 이 앱이 할 수 있는 일만 적어요. 적지 않은 건 전부 거부돼요.

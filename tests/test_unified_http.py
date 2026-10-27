@@ -11,6 +11,7 @@ from sori.framework.web import serve
 from sori_util import ROOT, asgi_request, free_port, loaded, run
 
 TODO = ROOT / "examples" / "todo"
+METRICS_TOKEN = "m" * 40
 
 
 def _load_todo():
@@ -18,7 +19,11 @@ def _load_todo():
     shutil.rmtree(TODO / "data", ignore_errors=True)
     app, diags = build_app(TODO)
     app.access_log = False
-    assert not app.startup_problems("test")
+    os.environ["SORI_METRICS_TOKEN"] = METRICS_TOKEN
+    try:
+        assert not app.startup_problems("test")
+    finally:
+        os.environ.pop("SORI_METRICS_TOKEN", None)
     return app.load()
 
 
@@ -81,8 +86,17 @@ class BuiltinServer(unittest.TestCase):
         self.assertTrue(self.raw(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")[2].endswith(b"ok"))
         self.assertEqual(self.raw(b"GET /readyz HTTP/1.1\r\nHost: localhost\r\n\r\n")[0], 200)
         self.raw(b"POST /todos HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
-        body = self.raw(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")[2]
+        body = self.raw(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + METRICS_TOKEN.encode() +
+                        b"\r\n\r\n")[2]
         self.assertIn(b'sori_security_events_total{kind="transfer_encoding"}', body)
+
+    def test_metrics_are_private_by_default(self):
+        """PR #3 리뷰: /metrics 는 기본 비공개 — 토큰 없으면 401, 틀린 토큰도 401."""
+        st, head, _ = self.raw(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        self.assertEqual(st, 401)
+        self.assertIn("WWW-Authenticate", head)
+        st, _, _ = self.raw(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + b"x" * 40 + b"\r\n\r\n")
+        self.assertEqual(st, 401)
 
 
 class AsgiAdapter(unittest.TestCase):

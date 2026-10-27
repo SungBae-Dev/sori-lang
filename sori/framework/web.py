@@ -1,4 +1,5 @@
 """SORI 웹 런타임: 라우팅, 입력 검증, 기본 보안 헤더, CSRF/스머글링/압축폭탄 방어, 메트릭."""
+import hmac
 import json as _json
 import mimetypes
 import os
@@ -262,8 +263,20 @@ def _dispatch(app, method, target, headers, body, ip, rid):
         return 200, {"Content-Type": "text/plain"}, b"ok", "/healthz"
     if method == "GET" and path == "/readyz":
         return (200 if app.ready else 503), {"Content-Type": "text/plain"}, (b"ready" if app.ready else b"starting"), "/readyz"
-    if method == "GET" and path == "/metrics" and sec.get("metrics", True):
-        return 200, {"Content-Type": "text/plain; version=0.0.4"}, app.metrics.text().encode(), "/metrics"
+    if method == "GET" and path == "/metrics" and app.metrics_mode != "off":
+        # 기본은 비공개: SORI_METRICS_TOKEN 이 설정돼 있고 Bearer 로 같을 때만. 토큰이 없으면 엔드포인트 자체를 끈다(404).
+        if app.metrics_mode == "token":
+            if not app.metrics_token:
+                return (*_err(404, "없는 경로예요", rid), "/metrics")
+            auth = headers.get("authorization", "")
+            if not (auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].encode(), app.metrics_token.encode())):
+                app.metrics.security("metrics_auth")
+                st, h, out = _err(401, "메트릭 토큰이 필요해요", rid)
+                h["WWW-Authenticate"] = 'Bearer realm="sori-metrics"'
+                return st, h, out, "/metrics"
+        if app.metrics_mode in ("token", "public"):
+            return 200, {"Content-Type": "text/plain; version=0.0.4", "Cache-Control": "no-store"}, \
+                app.metrics.text().encode(), "/metrics"
     if headers.get("transfer-encoding"):
         app.metrics.security("transfer_encoding")
         return (*_err(400, "Transfer-Encoding 요청은 받지 않아요 (요청 스머글링 차단)", rid), "-")

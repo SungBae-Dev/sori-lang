@@ -48,6 +48,20 @@ def friendly(exc):
     return "R199", f"{type(exc).__name__}: {exc}"
 
 
+METRICS_TOKEN_ENV = "SORI_METRICS_TOKEN"
+_SKIP_DIRS = {"__pycache__", ".git", ".sori", ".sori-build", "node_modules"}
+
+
+def metrics_mode(config):
+    """[security] metrics = "token"(기본) | "public" | "off".  예전 불리언: true → "token", false → "off"."""
+    v = config.get("security", {}).get("metrics", "token")
+    if v is True:
+        return "token"
+    if v is False:
+        return "off"
+    return v if v in ("token", "public", "off") else "invalid"
+
+
 def is_legacy_source(text):
     """SORI v0.1/B1 선언형 DSL 인지 (첫 유효 줄이 app "..." 선언)."""
     for line in text.splitlines():
@@ -96,6 +110,8 @@ class App:
         self.ir = None
         self.interp = None
         self.api_token = ""
+        self.metrics_token = ""
+        self.metrics_mode = metrics_mode(self.config)
 
     @property
     def name(self):
@@ -142,9 +158,21 @@ class App:
         return bool(token) and hmac.compare_digest(auth[7:].encode(), token.encode())
 
     # ---------- 실패 시 기동 거부 (fail-closed) ----------
-    def startup_problems(self, mode):
-        """mode: 'serve' 면 엄격 검사, 'test' 면 테스트용 임시 토큰 발급."""
+    def startup_problems(self, mode, server=None):
+        """mode: 'serve' 면 엄격 검사, 'test' 면 테스트용 임시 토큰 발급.
+        server: 실제로 띄울 HTTP 서버 ('uvicorn' | 'builtin' | None=검사 안 함).
+
+        운영(SORI_ENV=production)에는 우회 스위치가 없다: lock 누락, 내장 서버, strict_inputs=false,
+        같은 프로세스 파이썬은 설정으로 허용할 수 없다."""
         problems = []
+        if self.metrics_mode == "invalid":
+            problems.append('[security] metrics 는 "token" · "public" · "off" 중 하나여야 해요')
+        mtok = os.environ.get(METRICS_TOKEN_ENV, "")
+        if self.metrics_mode == "token" and mtok:
+            if len(mtok) < 32 or any(c in mtok for c in "\r\n"):
+                problems.append(f"{METRICS_TOKEN_ENV} 는 32자 이상, 줄바꿈 없이 설정해야 해요")
+            else:
+                self.metrics_token = mtok
         if self.project.uses_bearer:
             tok = os.environ.get(TOKEN_ENV, "")
             if mode == "test" and not tok:
@@ -161,8 +189,8 @@ class App:
                     problems.append(f"필수 비밀값 {name} 이(가) 없거나 {need}자 미만이에요 ([secrets] 규칙)")
             if self.env == "production":
                 bad = self.verify_lock()
-                if bad is None and not self.config.get("app", {}).get("allow_unlocked", False):
-                    problems.append("프로덕션인데 sori.lock 이 없어요 — 'sori build --target oci' 로 생성하세요")
+                if bad is None:
+                    problems.append("프로덕션인데 sori.lock 이 없어요 — 'sori build --target oci' 로 생성하세요 (우회 설정 없음)")
                 elif bad:
                     problems.append("소스 무결성 검증 실패 (sori.lock 과 다름): " + ", ".join(sorted(bad)))
                 if not self.project.strict_inputs:
@@ -170,6 +198,8 @@ class App:
                 if any(u["module"].startswith("py:") for u in self.ir["uses"]) or \
                         self.config.get("dev", {}).get("in_process_python"):
                     problems.append("프로덕션에서는 같은 프로세스 파이썬(use py / [dev] in_process_python)을 쓸 수 없어요 — [workers] 로 분리하세요")
+                if server is not None and server != "uvicorn":
+                    problems.append(f"프로덕션에서는 내장 서버({server})를 쓸 수 없어요 — server = \"uvicorn\" (내장 서버는 개발 전용)")
         return problems
 
     def extra_files(self):
@@ -181,18 +211,47 @@ class App:
                     out.append(os.path.relpath(full, self.root))
         return sorted(set(out))
 
+    def _tree_files(self, rel_dir):
+        """프로젝트 루트 안의 디렉터리(또는 파일)에 속한 일반 파일 목록. 루트 밖을 가리키는 링크는 제외."""
+        root = os.path.realpath(self.root)
+        start = os.path.realpath(os.path.join(self.root, rel_dir))
+        if not (start == root or start.startswith(root + os.sep)):
+            return []
+        if os.path.isfile(start):
+            return [os.path.relpath(start, root)]
+        out = []
+        for dirpath, dirnames, filenames in os.walk(start):
+            dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS and not d.startswith("."))
+            for fn in sorted(filenames):
+                full = os.path.realpath(os.path.join(dirpath, fn))
+                if fn.endswith((".pyc", ".pyo")) or fn == "sori.lock" or not os.path.isfile(full):
+                    continue
+                if full.startswith(root + os.sep):
+                    out.append(os.path.relpath(full, root))
+        return out
+
+    def deploy_files(self):
+        """배포 이미지에 들어가는 프로젝트 파일 전체 (= sori.lock 이 검증하는 범위).
+        .sori 소스, sori.toml, 워커 command 파일, [app] static 디렉터리, [permissions] fs_read 경로."""
+        files = set(self.sources) | set(self.extra_files())
+        if os.path.exists(os.path.join(self.root, "sori.toml")):
+            files.add("sori.toml")
+        static = self.config.get("app", {}).get("static")
+        dirs = [static] if static else []
+        dirs += [d for d in self.perms.get("fs_read", []) if isinstance(d, str)]
+        for d in dirs:
+            files.update(self._tree_files(d))
+        return sorted(files)
+
     # ---------- 무결성(공급망) ----------
     def lock_digest(self):
         h = {}
-        for rel, src in sorted(self.sources.items()):
-            h[rel] = hashlib.sha256(src.encode()).hexdigest()
-        for rel in self.extra_files():
-            with open(os.path.join(self.root, rel), "rb") as f:
-                h[rel] = hashlib.sha256(f.read()).hexdigest()
-        cfg = os.path.join(self.root, "sori.toml")
-        if os.path.exists(cfg):
-            with open(cfg, "rb") as f:
-                h["sori.toml"] = hashlib.sha256(f.read()).hexdigest()
+        for rel in self.deploy_files():
+            if rel in self.sources:
+                h[rel] = hashlib.sha256(self.sources[rel].encode()).hexdigest()  # 실제로 컴파일된 소스
+            else:
+                with open(os.path.join(self.root, rel), "rb") as f:
+                    h[rel] = hashlib.sha256(f.read()).hexdigest()
         return h
 
     def verify_lock(self):

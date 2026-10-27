@@ -271,6 +271,113 @@ class FailClosed(unittest.TestCase):
                     os.environ["SORI_ENV"] = old
                 shutil.rmtree(d)
 
+    def test_production_has_no_bypass_switches(self):
+        """PR #3 리뷰 P2: allow_unlocked 같은 설정으로 운영 lock 검사를 끌 수 없고, 운영에서 내장 서버는 거부."""
+        from sori_util import build
+        d, app, _ = build('route GET "/" public:\n    return "ok"\n', '[app]\nallow_unlocked = true\n')
+        try:
+            app.env = "production"
+            self.assertIn("sori.lock", " / ".join(app.startup_problems("serve")))
+            from sori.tools.deploy import write_lock
+            write_lock(app)
+            self.assertEqual(app.startup_problems("serve", server="uvicorn"), [])
+            self.assertIn("내장 서버", " / ".join(app.startup_problems("serve", server="builtin")))
+            app.env = "development"
+            self.assertEqual(app.startup_problems("serve", server="builtin"), [])
+        finally:
+            shutil.rmtree(d)
+
+    def test_lock_covers_static_and_fs_read_files(self):
+        """PR #3 리뷰 P2: 이미지에 들어가는 정적/읽기 파일을 바꾸면 운영 기동이 거부된다."""
+        from sori_util import build
+        from sori.tools.deploy import write_lock
+        toml = '[app]\nstatic = "./static"\n[permissions]\nfs_read = ["./content"]\n'
+        d, app, _ = build('route GET "/" public:\n    return "ok"\n', toml,
+                          extra={"static/app.js": "console.log(1)\n", "content/a.txt": "hello\n",
+                                 "notes/private.txt": "not deployed\n"})
+        try:
+            self.assertEqual(app.deploy_files(), ["app.sori", "content/a.txt", "sori.toml", "static/app.js"])
+            write_lock(app)
+            app.env = "production"
+            self.assertEqual(app.startup_problems("serve", server="uvicorn"), [])
+            for rel, content in (("static/app.js", "steal()\n"), ("content/a.txt", "changed\n")):
+                orig = open(os.path.join(d, rel)).read()
+                with open(os.path.join(d, rel), "w") as f:
+                    f.write(content)
+                probs = " / ".join(app.startup_problems("serve", server="uvicorn"))
+                self.assertIn("무결성", probs)
+                self.assertIn(rel, probs)
+                with open(os.path.join(d, rel), "w") as f:
+                    f.write(orig)
+            with open(os.path.join(d, "static", "new.js"), "w") as f:
+                f.write("added()\n")
+            self.assertIn("static/new.js", " / ".join(app.startup_problems("serve", server="uvicorn")))
+        finally:
+            shutil.rmtree(d)
+
+
+class MemoryLimits(unittest.TestCase):
+    def test_huge_range_is_refused_and_uncatchable(self):
+        """range(10억) 같은 내장 호출로 메모리를 고갈시키지 못한다 (catch 로도 못 삼킴)."""
+        from sori_util import loaded
+        d, app = loaded('fn big() -> Int:\n    try:\n        return len(range(1000000000))\n    catch e:\n        return -1\n'
+                        'fn ok() -> Int:\n    return len(range(1000))\n')
+        try:
+            with app.interp.budget(100000, 2.0):
+                self.assertEqual(app.interp.globals["ok"](), 1000)
+                with self.assertRaises(ResourceLimit):
+                    app.interp.globals["big"]()
+        finally:
+            shutil.rmtree(d)
+
+
+class MetricsPolicy(unittest.TestCase):
+    def _app(self, toml):
+        from sori_util import build
+        d, app, _ = build('route GET "/" public:\n    return "ok"\n', toml)
+        self.addCleanup(shutil.rmtree, d)
+        return app
+
+    def _get(self, app, auth=None):
+        from sori.framework.web import dispatch
+        h = {"host": "localhost"}
+        if auth:
+            h["authorization"] = auth
+        return dispatch(app, "GET", "/metrics", h, b"", "127.0.0.1")[0]
+
+    def test_default_is_token_and_disabled_without_token(self):
+        app = self._app("[permissions]\n")
+        os.environ.pop("SORI_METRICS_TOKEN", None)
+        self.assertEqual(app.startup_problems("serve"), [])
+        app.access_log = False
+        app.load()
+        self.assertEqual(self._get(app), 404)
+
+    def test_token_mode(self):
+        app = self._app("[permissions]\n")
+        app.access_log = False
+        os.environ["SORI_METRICS_TOKEN"] = "short"
+        try:
+            self.assertTrue(app.startup_problems("serve"))
+            os.environ["SORI_METRICS_TOKEN"] = "k" * 40
+            self.assertEqual(app.startup_problems("serve"), [])
+        finally:
+            os.environ.pop("SORI_METRICS_TOKEN", None)
+        app.load()
+        self.assertEqual(self._get(app), 401)
+        self.assertEqual(self._get(app, "Bearer " + "x" * 40), 401)
+        self.assertEqual(self._get(app, "Bearer " + "k" * 40), 200)
+
+    def test_public_and_off_are_explicit(self):
+        for mode, want in (("public", 200), ("off", 404)):
+            app = self._app(f'[security]\nmetrics = "{mode}"\n')
+            app.access_log = False
+            self.assertEqual(app.startup_problems("serve"), [])
+            app.load()
+            self.assertEqual(self._get(app), want, mode)
+        app = self._app('[security]\nmetrics = "everyone"\n')
+        self.assertTrue(app.startup_problems("serve"))
+
 
 if __name__ == "__main__":
     unittest.main()

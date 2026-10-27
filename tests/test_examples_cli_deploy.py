@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -152,6 +153,124 @@ class DeployStatic(unittest.TestCase):
         except ImportError:
             self.skipTest("PyYAML 없음")
         self.assertIn("worker-risk-model", yaml.safe_load(text)["services"])
+
+
+def _uvicorn_available():
+    try:
+        import uvicorn  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class OciContextE2E(unittest.TestCase):
+    """PR #3 리뷰 P1: OCI 빌드 컨텍스트만으로(저장소 없이) 모듈 임포트와 운영 기동이 되는가.
+
+    Docker 데몬 없이 컨테이너 레이아웃을 그대로 흉내 낸다: WORKDIR=app/, PYTHONPATH=runtime/, SORI_ENV=production.
+    실제 docker build/run 은 CI 의 별도 단계에서 수행한다.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="sori_oci_")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.procs = []
+        self.addCleanup(self._stop)
+
+    def _stop(self):
+        for p in self.procs:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+
+    def _context(self, example):
+        proj = Path(self.tmp, example)
+        shutil.copytree(ROOT / "examples" / example, proj, ignore=shutil.ignore_patterns("data", "sori.lock", ".sori"))
+        r = cli("build", proj, "--target", "oci", "--out", Path(self.tmp, example + "-ctx"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return Path(self.tmp, example + "-ctx")
+
+    def _env(self, ctx, **extra):
+        e = {k: v for k, v in os.environ.items() if not k.startswith("SORI_")}
+        e.update(PYTHONPATH=str(ctx / "runtime"), SORI_ENV="production", PYTHONDONTWRITEBYTECODE="1", **extra)
+        return e
+
+    def _py(self, ctx, *args, **extra):
+        return subprocess.run([sys.executable, *args], cwd=ctx / "app", env=self._env(ctx, **extra), text=True,
+                              capture_output=True, timeout=60)
+
+    def test_context_contains_whole_package_and_hashed_files_only(self):
+        ctx = self._context("todo")
+        for rel in ("__init__.py", "__main__.py", "lang/compiler.py", "lang/parser.py", "framework/interp.py",
+                    "framework/asgi.py", "tools/deploy.py"):
+            self.assertTrue((ctx / "runtime" / "sori" / rel).is_file(), rel)
+        lock = json.loads((ctx / "app" / "sori.lock").read_text(encoding="utf-8"))
+        shipped = sorted(str(p.relative_to(ctx / "app")) for p in (ctx / "app").rglob("*") if p.is_file())
+        self.assertEqual(shipped, sorted(list(lock["files"]) + ["sori.lock"]))
+        self.assertIn("static/app.css", lock["files"])
+        self.assertIn("content/readme.txt", lock["files"])
+        df = (ctx / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("mkdir -p /app/data && chown 10001:10001 /app/data", df)
+        self.assertIn('"--server", "uvicorn"', df)
+        self.assertIn("uvicorn", (ctx / "requirements.txt").read_text(encoding="utf-8"))
+
+    def test_runtime_imports_from_context_not_repository(self):
+        ctx = self._context("todo")
+        r = self._py(ctx, "-c", "import sori, sori.lang.compiler, sori.framework.interp, sori.framework.asgi; print(sori.__file__)")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.strip().startswith(str(ctx / "runtime")), r.stdout)
+        r = self._py(ctx, "-m", "sori", "check", str(ctx / "app"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_production_refuses_builtin_server_and_tampered_files(self):
+        ctx = self._context("todo")
+        r = self._py(ctx, "-m", "sori", "run", str(ctx / "app"), "--server", "builtin", "--port", "1")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn("내장 서버", r.stderr)
+        (ctx / "app" / "static" / "app.css").write_text("body{background:url(//evil)}\n", encoding="utf-8")
+        r = self._py(ctx, "-m", "sori", "run", str(ctx / "app"), "--server", "uvicorn", "--port", "1")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn("static/app.css", r.stderr)
+
+    @unittest.skipUnless(_uvicorn_available(), "uvicorn 미설치 — 운영 기동 E2E 를 실행하지 않음 (CI 에서 실행)")
+    def test_production_start_from_context(self):
+        import urllib.request
+        from sori_util import free_port
+        token = "e" * 40
+        for example, probe in (("todo", "/api/todos"), ("secure-api", "/health")):
+            with self.subTest(example):
+                ctx = self._context(example)
+                port = free_port()
+                p = subprocess.Popen([sys.executable, "-m", "sori", "run", str(ctx / "app"), "--host", "127.0.0.1",
+                                      "--port", str(port), "--server", "uvicorn"], cwd=ctx / "app",
+                                     env=self._env(ctx, SORI_API_TOKEN=token), stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.PIPE, text=True)
+                self.procs.append(p)
+                base = f"http://127.0.0.1:{port}"
+                for _ in range(100):
+                    if p.poll() is not None:
+                        self.fail(f"{example} 기동 실패 (exit {p.returncode}): {p.stderr.read()}")
+                    try:
+                        with urllib.request.urlopen(base + "/healthz", timeout=1) as resp:
+                            if resp.status == 200:
+                                break
+                    except OSError:
+                        time.sleep(0.1)
+                else:
+                    self.fail(f"{example}: /healthz 응답 없음")
+                with urllib.request.urlopen(base + probe, timeout=3) as resp:
+                    self.assertEqual(resp.status, 200)
+                    json.loads(resp.read())
+                if example == "secure-api":
+                    req = urllib.request.Request(base + "/greet", data=b'{"name":"oci"}', method="POST",
+                                                 headers={"Content-Type": "application/json",
+                                                          "Authorization": "Bearer " + token})
+                    with urllib.request.urlopen(req, timeout=3) as resp:
+                        self.assertEqual(json.loads(resp.read())["message"], "안녕하세요, oci")
+                p.terminate()
+                p.wait(10)
 
 
 if __name__ == "__main__":
