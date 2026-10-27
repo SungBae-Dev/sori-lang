@@ -78,30 +78,34 @@
 |---|---|---|
 | 컴파일 타임 검사 (스코프·타입·권한·라우트 정책·HTML 문맥·`_` 금지) | 아니다 (개발자 실수 방지) | 악의적 개발자를 막는 장치가 아니라 실수를 컴파일 단계에서 걸러내는 장치 |
 | IR 해석기 (Python Backend) | **아니다** | `eval`/`exec`/`compile` 없음, 속성 화이트리스트, 실행 상한이 있지만 같은 파이썬 프로세스 안이다. **신뢰할 수 없는 코드를 운영에서 실행하는 샌드박스로 주장하지 않는다** |
+| `/healthz` `/readyz` | 공개 (프로브용) | 상태 문자열만 반환. `/metrics` 는 기본 비공개 (위 표) |
 | 격리 워커 (`std.worker`) | 부분적 | 별도 프로세스 + 루프백 고정 주소 + 응답 타입 검증. 같은 파드/네트워크 네임스페이스라 **침해된 워커를 루프백이 막아주지는 않는다** → 워커 자체 하드닝(비루트, 읽기전용, drop ALL)과 별도 이그레스 정책 필요 |
 | 컨테이너/K8s (`sori k8s`) | 그렇다 (운영자 설정 전제) | 비루트, 읽기전용 루트FS, capabilities drop ALL, seccomp, SA 토큰 미마운트, 권한 기반 NetworkPolicy. 커널·런타임 취약점과 운영자 재설정은 통제 밖 |
 | `use py` (같은 프로세스 파이썬) | 아니다 | **개발 전용.** `[dev] in_process_python = true` 가 있어야 컴파일되고, `SORI_ENV=production` 이면 기동 거부 |
 
-### 구현·테스트된 통제 (로컬 96 tests)
+### 구현·테스트된 통제 (로컬 112 tests)
 
 | 위협 | 통제 | 테스트 |
 |---|---|---|
 | 동적 코드 실행 | 런타임 경로에 eval/exec/compile 없음 | AST 스캔 테스트 + CI grep 가드 |
 | 변조된 IR | 구조 검증 실패 시 실행 거부 (Python·Rust 모두) | `test_validator_rejects_tampered_ir`, `test_tampered_ir_is_refused_by_interpreter`, Rust 로드 거부 |
 | 인증 누락·우회 | 라우트별 정책 필수(E301), 인증을 본문 파싱보다 먼저, bearer 상수 시간 비교, 토큰 32자 미만 기동 거부 | `AuthOrdering`, `FailClosed`, 마이그레이션 동등성 |
-| 워커 오남용 | public 라우트에서 워커 호출 금지 (함수 경유 포함, E306), 이름은 고정 문자열, 응답 타입 검증(위반 시 502) | `test_public_route_cannot_reach_worker_even_through_function`, `WorkerV2` |
+| 워커 오남용 | public 라우트에서 워커 호출 금지 (E306) — 함수 경유뿐 아니라 함수값 별칭·맵/목록/레코드 저장·람다 교체·고차 함수 경유까지 보수적으로 추적. std 함수/모듈을 값으로 쓰는 것은 금지(E110), IR 검증기·런타임도 거부. 이름은 고정 문자열, 응답 타입 검증(위반 시 502) | `test_indirect_worker_paths_are_blocked` (11가지 경로), `test_tampered_ir_*std*`, `WorkerV2` |
 | 입력 기반 공격 | 범위 필수(E305, 기본값), 엄격 JSON(문자열 숫자·1→true 거부), 중복 키·NaN·깊이·개수·길이 제한, mass assignment 거부 | `test_input_hardening` (12종) |
 | SQLi / XSS / CSRF / SSRF / 경로 탈출 / 오픈 리다이렉트 / 비밀값 노출 | Ara 통제 유지 (sql 리터럴, 문맥 이스케이프, Origin 검사, 내부망 차단·IP 고정, realpath, 상대경로만, Secret 마스킹) | `RuntimeSecurity`, 예제 todo 16 tests |
 | 요청 스머글링·압축 본문·경로 혼동 | TE 거부, 보안 헤더 중복 거부, Content-Encoding 415, 인코딩된 `/` `..` 거부 (내장 서버·ASGI 공통) | `BuiltinServer`, `AsgiAdapter`, uvicorn E2E |
 | 무한 루프·재귀 DoS | 단계 수·호출 깊이·요청 시간 상한, catch 불가 | `test_resource_limits_are_uncatchable`, `test_infinite_loop_request_is_stopped` |
-| 운영에서 보안 완화 | `strict_inputs=false`, `use py`, `sori.lock` 누락/불일치 → 운영 기동 거부 | `test_production_refuses_unsafe_configuration` |
+| 운영에서 보안 완화 | `strict_inputs=false`, `use py`, `sori.lock` 누락/불일치, 내장 서버 → 운영 기동 거부. 우회 설정 없음 (`allow_unlocked` 삭제) | `test_production_refuses_unsafe_configuration`, `test_production_has_no_bypass_switches`, OCI E2E |
+| 배포 리소스 변조 | `sori.lock` 이 이미지에 들어가는 파일 전부(.sori, sori.toml, 워커 파일, static, fs_read)를 해시. 해시 안 된 파일은 이미지에 없음 | `test_lock_covers_static_and_fs_read_files`, `test_context_contains_whole_package_and_hashed_files_only` |
+| 내부 지표 노출 | `/metrics` 기본 비공개: `SORI_METRICS_TOKEN` Bearer(상수 시간 비교) 없으면 401, 토큰 미설정이면 404. 공개는 `[security] metrics = "public"` 명시 | `MetricsPolicy`, `test_metrics_are_private_by_default` |
+| 메모리 고갈 | 반복 연산·`range` 결과 크기 상한 1천만 (catch 불가) | `test_huge_range_is_refused_and_uncatchable` |
 | 공급망 | 런타임 의존성 0 (uvicorn 은 선택), Rust 슬라이스 의존성 0, `sori.lock` 소스 해시 | (정적) |
 
 ### 아직 검증하지 않은 영역 (프로덕션 게이트 추가 항목)
 
 - [ ] 퍼징: 렉서/파서, JSON 파서(Python·Rust), IR 해석기 차분 퍼징
 - [ ] 외부 보안 감사 및 침투 테스트
-- [ ] Docker 이미지 실제 빌드·스캔 (이 PR 은 생성물 정적 검증만)
+- [ ] Docker 이미지 취약점 스캔 (실제 빌드·하드닝 실행은 CI `oci-image` 작업이 수행 — 결과는 PR CI 로 확인)
 - [ ] IR 서명/출처 증명 (현재 구조 검사만)
 - [ ] 멀티 테넌트 인가(BOLA/ABAC), 감사 로그, 비밀키 로테이션
 - [ ] 리버스 프록시 앞단과의 헤더/경로 해석 일치 검증

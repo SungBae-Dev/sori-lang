@@ -122,6 +122,7 @@ ROS2 공식 문서는 Python 클라이언트 `rclpy`를 제공한다: https://do
        ┌───────────┴──────────────┐
  Python Backend                Rust Backend (B2 슬라이스)
  sori/framework/interp.py      runtime-rs/ (std 전용, 미지원 IR → 501)
+ (로드 시 IR→클로저 조립, exec 없음)
        │
  sori/framework: web(내장 dev 서버) · asgi(uvicorn) · stdlib(db/http/fs/env/ai/worker/…) · core(타입·Secret·sql/html)
        │

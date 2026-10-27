@@ -25,7 +25,7 @@ python -m sori k8s examples/secure-api       # manifests: permissions → Networ
 python -m sori migrate examples/hello.sori   # v0.1 DSL → v0.3 syntax + report
 ```
 
-**What works (local tests, 96 passing):**
+**What works (local tests, 112 passing):**
 
 - variables, functions, lambdas, loops, records, Korean identifiers
 - every route requires an access policy: `public` / `guard bearer` / user guard
@@ -36,7 +36,8 @@ python -m sori migrate examples/hello.sori   # v0.1 DSL → v0.3 syntax + report
 - effect analysis (public routes cannot reach workers, even through functions)
 - loopback-only Python workers with typed responses
 - AI tool schemas, periodic tasks
-- fail-closed production startup (`SORI_ENV=production`)
+- fail-closed production startup (`SORI_ENV=production`): lock required, no bypass switch, uvicorn only
+- `/metrics` private by default (`SORI_METRICS_TOKEN` bearer), lock covers static/fs_read files
 - v0.1 → v0.3 migration verified on 23 requests
 - Python/Rust backend parity on 20 test vectors
 
@@ -46,8 +47,8 @@ python -m sori migrate examples/hello.sori   # v0.1 DSL → v0.3 syntax + report
 - The IR interpreter is **not an OS-level sandbox**.
 - `use py` (in-process Python) is development-only.
 - The Rust backend runs only a slice: no std modules, user functions or guards; it returns 501 for anything unsupported.
-- It is slower than the old exec-based prototype (measured 1.9–19×; see ADR).
-- No fuzzing, external audit, or Docker image build was performed in this change.
+- CPU-heavy code is slower than native Python: 2.6–11× in measurements. Web routes measured equal or faster. See ADR 0001 §4.
+- No security fuzzing or external audit has been done. Docker image build and hardened run happen in CI (`oci-image` job), not locally.
 - It does not block all CVEs.
 
 Docs:

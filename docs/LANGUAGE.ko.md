@@ -99,6 +99,8 @@ route POST "/api/todos" (body: NewTodo) guard admin:
 컴파일러는 각 함수·라우트·태스크의 **효과(effects)** 를 호출 그래프를 따라 계산해 IR 에 기록한다. 효과 종류는 db, net, fs.read, fs.write, env, ai, worker, log, time, crypto, py 다.
 
 - public 라우트가 (함수를 거쳐서라도) 워커에 닿으면 E306 이다.
+- 함수는 값으로 저장·전달할 수 있다. 다만 효과 분석은 보수적이다: 함수값·람다·맵에서 꺼낸 함수를 부르는 곳은, 값으로 빠져나간 모든 함수와 람다의 효과를 가진 것으로 본다.
+- `std` 함수·모듈은 값으로 쓸 수 없다 (`let f = worker.call` → E110). 항상 `worker.call(...)` 처럼 직접 호출한다.
 - public 라우트가 AI 를 부르면 W305 경고가 난다.
 
 ## 워커 (별도 프로세스 파이썬/ML/ROS 어댑터)

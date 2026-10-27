@@ -51,6 +51,18 @@ v0.1 파일은 **마이그레이션하지 않아도 계속 동작한다**. CLI �
 | 헬스체크 | v0.1 은 사용자 라우트 `/health`, v0.3 은 추가로 `/healthz` `/readyz` `/metrics` 제공 | 기존 `/health` 라우트는 그대로 변환됨 |
 | 변환 불가 식 | v0.1 검증기가 허용하는 식은 모두 변환되지만, 실패 시 `[수동 수정 필요]` 와 위치 출력 | 생성 파일에 `error("migration: manual fix required", 500)` 이 들어가므로 배포 전 반드시 수정 |
 
+## 운영 설정 변경 (PR #3 리뷰 반영)
+
+| 이전 | 지금 | 이유 |
+|---|---|---|
+| `[app] allow_unlocked = true` 면 운영에서 `sori.lock` 없이 기동 | **삭제.** 운영(`SORI_ENV=production`)에서는 lock 이 항상 필요하고, 우회 설정은 없다 | 운영 fail-closed 에 예외를 두지 않음 |
+| 운영에서 `--server builtin` 은 경고 후 실행 | **기동 거부 (exit 3).** 운영은 uvicorn 만 쓴다. `sori build --target oci` 이미지는 항상 uvicorn | 내장 서버는 개발 전용 |
+| `/metrics` 기본 공개 | **기본 비공개.** `SORI_METRICS_TOKEN`(32자 이상)이 있을 때만 `Authorization: Bearer` 로 응답, 없으면 404 | 내부 지표 노출 방지 |
+| `[security] metrics = true/false` | `"token"`(기본) · `"public"` · `"off"`. `true` → `"token"`, `false` → `"off"` 로 읽음 | 공개는 명시적으로만 |
+| `sori.lock` 은 .sori·sori.toml·워커 파일만 해시 | 이미지에 들어가는 파일 전부를 해시: `[app] static` 폴더, `[permissions] fs_read` 경로 포함. 해시되지 않은 파일은 이미지에 복사하지 않음 | 정적 리소스 변조 탐지 |
+
+`sori k8s` 는 기본(token) 모드에서 `prometheus.io/scrape` 어노테이션을 넣지 않는다. Prometheus Operator 를 쓴다면 ServiceMonitor 의 `bearerTokenSecret` 에 같은 토큰을 지정한다. 공개 스크랩이 꼭 필요하면 `[security] metrics = "public"` 을 쓰고, 네트워크 정책으로 접근을 제한한다.
+
 ## 마이그레이션 후 권장 작업
 
 1. `sori audit` 로 권한·효과·접근 정책 확인
