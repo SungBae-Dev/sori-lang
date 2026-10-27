@@ -59,6 +59,7 @@ class Ctx:
     def __init__(self, in_fn=False, ret=None, kind="module"):
         self.in_fn, self.ret, self.loop, self.kind = in_fn, ret, 0, kind
         self.effects, self.calls, self.returns = set(), set(), []
+        self.dynamic = False  # 정적으로 대상을 알 수 없는 호출(함수값·람다·Dyn)이 있는가
 
 
 class Project:
@@ -81,7 +82,9 @@ class Project:
         self.uses = []
         self.ir = {"types": [], "functions": [], "guards": [], "init": [], "routes": [], "tasks": [], "tests": [],
                    "uses": []}
-        self.fn_effects, self.fn_calls = {}, {}
+        self.fn_effects, self.fn_calls, self.fn_dynamic = {}, {}, {}
+        # 값으로 빠져나간 호출 가능 객체: 함수 이름(호출 위치가 아닌 곳에서 참조됨)과 람다 본문
+        self.escaped_fns, self.lambda_pool = set(), []
 
     def error(self, code, msg, file, line, col, hint=None, length=1, severity="error"):
         self.diags.append(SoriError(code, msg, file, line, col, hint, severity, length))
@@ -155,25 +158,53 @@ class Project:
                 self.globals_t[st.name] = literal_type(st.value)
 
     def _finish_effects(self):
-        # 함수 호출 그래프에서 효과를 전이(fixpoint)
+        """효과를 호출 그래프로 전이한다 (fixpoint).
+
+        건전성(soundness) 규칙 — 효과를 놓치느니 과하게 잡는다:
+        - 직접 호출 f(x) 와 Fn 타입 별칭 호출은 f 로 가는 간선.
+        - 함수가 호출 위치가 아닌 곳에서 참조되면(값으로 저장·전달) '빠져나간 함수' 가 된다.
+        - 람다 본문의 효과는 람다를 만든 곳에 더하고, 람다 풀에도 등록한다.
+        - 대상을 정적으로 알 수 없는 호출(함수값·람다·Dyn·인덱스 결과 호출)은
+          빠져나간 모든 함수와 모든 람다의 효과를 받는다 (POOL).
+        - std 모듈 함수/모듈 자체는 값으로 쓸 수 없다 (E110) — 별칭으로 효과를 숨길 수 없다.
+        """
+        pool = set()
         changed = True
         while changed:
             changed = False
             for name, calls in self.fn_calls.items():
                 eff = self.fn_effects.setdefault(name, set())
+                add = set()
                 for c in calls:
-                    add = self.fn_effects.get(c, set()) - eff
-                    if add:
-                        eff |= add
-                        changed = True
+                    add |= self.fn_effects.get(c, set())
+                if self.fn_dynamic.get(name):
+                    add |= pool
+                if add - eff:
+                    eff |= add
+                    changed = True
+            new_pool = set()
+            for name in self.escaped_fns:
+                new_pool |= self.fn_effects.get(name, set())
+            for lam in self.lambda_pool:
+                new_pool |= lam["effects"]
+                for c in lam["calls"]:
+                    new_pool |= self.fn_effects.get(c, set())
+                if lam["dynamic"]:
+                    new_pool |= pool
+            if new_pool - pool:
+                pool |= new_pool
+                changed = True
+        self.dynamic_pool = pool
         for fn in self.ir["functions"] + self.ir["guards"]:
             fn["effects"] = sorted(self.fn_effects.get(fn["name"], set()))
         for kind in ("routes", "tasks", "tests"):
-            for item, own, calls in [(x["ir"], x["own"], x["calls"]) for x in getattr(self, "_pending_" + kind, [])]:
-                eff = set(own)
-                for c in calls:
+            for x in getattr(self, "_pending_" + kind, []):
+                eff = set(x["own"])
+                for c in x["calls"]:
                     eff |= self.fn_effects.get(c, set())
-                item["effects"] = sorted(eff)
+                if x.get("dynamic"):
+                    eff |= pool
+                x["ir"]["effects"] = sorted(eff)
         for r in getattr(self, "_pending_routes", []):
             ir, meta = r["ir"], r["meta"]
             meta["effects"] = ir["effects"]
@@ -452,6 +483,7 @@ class FileCompiler:
         body = self.block(st.body, scope, ctx)
         self.p.fn_effects[st.name] = set(ctx.effects)
         self.p.fn_calls[st.name] = set(ctx.calls)
+        self.p.fn_dynamic[st.name] = ctx.dynamic
         return params, body, ctx
 
     def c_fn(self, st):
@@ -544,7 +576,7 @@ class FileCompiler:
                 "params": [(p.name, p.typ, p.name in path_params) for p in st.params]}
         self.p.routes.append(meta)
         self.p.__dict__.setdefault("_pending_routes", []).append(
-            {"ir": route_ir, "own": ctx.effects, "calls": ctx.calls, "meta": meta})
+            {"ir": route_ir, "own": ctx.effects, "calls": ctx.calls, "dynamic": ctx.dynamic, "meta": meta})
 
     def c_task(self, st):
         scope = Scope(self.module, "fn")
@@ -554,7 +586,8 @@ class FileCompiler:
                 "effects": [], "at": self.at(st)}
         self.p.ir["tasks"].append(item)
         self.p.tasks.append({"name": st.name, "period": st.period, "file": self.file, "line": st.line, "doc": st.doc})
-        self.p.__dict__.setdefault("_pending_tasks", []).append({"ir": item, "own": ctx.effects, "calls": ctx.calls})
+        self.p.__dict__.setdefault("_pending_tasks", []).append({"ir": item, "own": ctx.effects, "calls": ctx.calls,
+                                                                 "dynamic": ctx.dynamic})
 
     def c_test(self, st):
         scope = Scope(self.module, "fn")
@@ -564,7 +597,8 @@ class FileCompiler:
         item = {"name": st.name, "body": body, "effects": [], "at": self.at(st)}
         self.p.ir["tests"].append(item)
         self.p.tests.append({"name": st.name, "file": self.file, "line": st.line})
-        self.p.__dict__.setdefault("_pending_tests", []).append({"ir": item, "own": ctx.effects, "calls": ctx.calls})
+        self.p.__dict__.setdefault("_pending_tests", []).append({"ir": item, "own": ctx.effects, "calls": ctx.calls,
+                                                                 "dynamic": ctx.dynamic})
 
     # ---------- 문장 ----------
     def block(self, body, scope, ctx):
@@ -680,7 +714,7 @@ class FileCompiler:
         return None
 
     # ---------- 표현식 ----------
-    def ref(self, node, scope, ctx):
+    def ref(self, node, scope, ctx, callee=False, module_ok=False):
         name = node.id
         if name.startswith("_"):
             self.err("E105", f"'{name}' 처럼 '_' 로 시작하는 이름은 쓸 수 없어요", node, "샌드박스 보호 규칙이에요")
@@ -700,8 +734,12 @@ class FileCompiler:
                       "신뢰할 수 있는 고정 문자열에만 쓰세요. sori audit 에 기록돼요")
         if kind in ("fn", "guard"):
             ctx.calls.add(name)
-        if kind == "module" and t.startswith("Module:"):
-            pass
+            if not callee:
+                self.p.escaped_fns.add(name)  # 값으로 저장·전달됨 → 어디서 호출될지 정적으로 모름
+        if kind == "module" and t.startswith("Module:") and not module_ok:
+            self.err("E110", f"표준 모듈 '{name}' 은(는) 값으로 저장하거나 넘길 수 없어요", node,
+                     f"{name}.함수(...) 처럼 직접 호출하세요 (효과·권한 분석이 호출 위치를 볼 수 있어야 해요)")
+            return self.N("lit", node, ty.DYN, v=None)
         if kind == "builtin" or owner is self.builtins or (owner is not None and owner.kind == "builtin"):
             scope_kind = "builtin"
         elif owner is not None and owner.kind == "module":
@@ -769,7 +807,12 @@ class FileCompiler:
                 vt = ty.join(vt, kb["t"])
             return self.N("map", e, ty.map_of(vt if pairs else ty.DYN), pairs=pairs)
         if k == "Attr":
-            return self.attr(e, scope, ctx)
+            node = self.attr(e, scope, ctx)
+            if node["op"] == "std":
+                self.err("E110", f"std.{node['module']}.{node['name']} 은(는) 값으로 저장하거나 넘길 수 없어요", e,
+                         f"{node['module']}.{node['name']}(...) 처럼 직접 호출하세요 (별칭으로 워커·AI 호출을 숨길 수 없게 하는 규칙)")
+                return self.N("lit", e, ty.DYN, v=None)
+            return node
         if k == "Index":
             obj = self.expr(e.obj, scope, ctx)
             ot = ty.strip(obj["t"])
@@ -833,8 +876,14 @@ class FileCompiler:
             return self.N("cond", e, ty.join(a["t"], b["t"]), c=c, then=a, orelse=b)
         if k == "Lambda":
             ls = Scope(scope, "lambda")
-            params = self._params(e.params, ls, ctx, typed=False)
-            body = self.expr(e.body, ls, ctx)
+            lctx = Ctx(ctx.in_fn, kind="lambda")
+            params = self._params(e.params, ls, lctx, typed=False)
+            body = self.expr(e.body, ls, lctx)
+            # 만든 곳은 람다를 바로 부를 수 있으니(map 등) 효과를 그대로 받고, 값으로 빠져나갈 수 있으니 풀에도 등록
+            ctx.effects |= lctx.effects
+            ctx.calls |= lctx.calls
+            ctx.dynamic = ctx.dynamic or lctx.dynamic
+            self.p.lambda_pool.append({"effects": lctx.effects, "calls": lctx.calls, "dynamic": lctx.dynamic})
             return self.N("lambda", e, "Lambda:" + body["t"], params=params, body=body)
         self.err("E002", f"알 수 없는 식 {k}", e)
         return self.N("lit", e, ty.DYN, v=None)
@@ -870,7 +919,7 @@ class FileCompiler:
         return ty.DYN
 
     def attr(self, e, scope, ctx):
-        obj = self.expr(e.obj, scope, ctx)
+        obj = self.ref(e.obj, scope, ctx, module_ok=True) if e.obj.kind == "Name" else self.expr(e.obj, scope, ctx)
         if e.name.startswith("_"):
             self.err("E105", f"'_' 로 시작하는 속성 '{e.name}' 에는 접근할 수 없어요", e,
                      "파이썬 내부 객체(__class__, __globals__ 등)로의 탈출을 막는 규칙이에요")
@@ -901,7 +950,15 @@ class FileCompiler:
         return self.N("field", e, t, obj=obj, name=e.name)
 
     def call(self, e, scope, ctx):
-        fn = self.expr(e.func, scope, ctx)
+        direct = False
+        if e.func.kind == "Name":
+            fn = self.ref(e.func, scope, ctx, callee=True)
+            info, _ = scope.lookup(e.func.id)
+            direct = info is not None and info[0] in ("fn", "guard")
+        elif e.func.kind == "Attr":
+            fn = self.attr(e.func, scope, ctx)
+        else:
+            fn = self.expr(e.func, scope, ctx)
         args = [self.expr(a, scope, ctx) for a in e.args]
         kwargs = []
         for name, v, line, col in e.kwargs:
@@ -970,6 +1027,9 @@ class FileCompiler:
                     self.type_err(e, f"{tname} 을(를) 만들려면 {', '.join(missing)} 이(가) 필요해요")
         elif ft.startswith("Fn:"):
             fname = ft[3:]
+            ctx.calls.add(fname)
+            if not direct:
+                ctx.dynamic = True  # 별칭(let h = f)으로 부름 — 점진적 타입이라 다른 함수가 들어 있을 수 있어 보수적으로
             decl = self.p.fns.get(fname) or self.p.guards.get(fname)
             if decl is not None:
                 params = decl.params
@@ -995,6 +1055,7 @@ class FileCompiler:
                     "Bool" if fname in self.p.guards else ty.DYN)
         elif ft.startswith("Lambda:"):
             rt = ft[7:]
+            ctx.dynamic = True
         elif ft.startswith("Builtin:"):
             b = ft[8:]
             spec = BUILTIN_RET[b]
@@ -1015,6 +1076,8 @@ class FileCompiler:
                     rt = ty.list_of(f_t[7:])
             if b == "len" and args and ty.known(a0) and not (ty.is_list(a0) or ty.is_map(a0) or ty.strip(a0) in ("Str", "Html")):
                 self.type_err(e, f"len() 은 목록/맵/문자열에만 쓸 수 있어요 ({a0})")
+        elif ft != "Py" and not ft.startswith(("Std:", "Method:", "Type:")):
+            ctx.dynamic = True  # Dyn·인덱스 결과·함수 반환값 호출: 대상을 정적으로 모름
         return self.N("call", e, rt, fn=fn, args=args, kwargs=kwargs)
 
     def _arg_check(self, expected, arg, label, node):

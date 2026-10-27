@@ -69,6 +69,9 @@ def compat(expected, actual):
         return True
     if (is_list(e) and is_list(a)) or (is_map(e) and is_map(a)):
         return compat(inner(e), inner(a))
+    if e.startswith("Lambda:") and a.startswith(("Lambda:", "Fn:")):
+        # 호출 가능한 값끼리: 반환 타입이 확실히 다를 때만 거부
+        return a.startswith("Fn:") or compat(e[7:], a[7:])
     return False
 
 

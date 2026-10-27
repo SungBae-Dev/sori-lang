@@ -64,6 +64,74 @@ class CompileTimeSecurity(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
+    def test_indirect_worker_paths_are_blocked(self):
+        """PR #3 리뷰 P1: 별칭·함수값·고차함수·람다·컬렉션 저장으로 public 라우트가 워커에 닿으면 안 된다."""
+        toml = '[permissions]\n[workers.m]\nurl = "http://127.0.0.1:9010/invoke"\ntimeout_ms = 500\n'
+        head = 'use std.worker\nfn call_it(b: Json) -> Json:\n    return worker.call("m", b)\n'
+        cases = {
+            "std 함수 별칭": ('use std.worker\nlet invoke_model = worker.call\n'
+                          'route POST "/p" public:\n    return invoke_model("m", {})\n', "E110"),
+            "std 모듈 별칭": ('use std.worker\nlet w = worker\nroute POST "/p" public:\n    return w.call("m", {})\n', "E110"),
+            "std 함수를 인자로": ('use std.worker\nfn apply(f, x):\n    return f("m", x)\n'
+                           'route POST "/p" public:\n    return apply(worker.call, {})\n', "E110"),
+            "전역 함수 별칭": (head + 'let h = call_it\nroute POST "/p" public:\n    return h({})\n', "E306"),
+            "맵에 저장": (head + 'let table = {go: call_it}\nroute POST "/p" public:\n    return table["go"]({})\n', "E306"),
+            "목록에 저장": (head + 'let fs = [call_it]\nroute POST "/p" public:\n    return fs[0]({})\n', "E306"),
+            "함수가 함수를 반환": (head + 'fn pick():\n    return call_it\nroute POST "/p" public:\n    return pick()({})\n', "E306"),
+            "고차 함수 파라미터": (head + 'fn apply(f, x):\n    return f(x)\nroute POST "/p" public:\n    return apply(call_it, {})\n', "E306"),
+            "다른 라우트가 람다 교체": ('use std.worker\nvar cb = fn(b) => b\nfn arm():\n    cb = fn(b) => worker.call("m", b)\n'
+                              'route POST "/arm" guard bearer:\n    arm()\n    return {ok: true}\n'
+                              'route POST "/p" public:\n    return cb({})\n', "E306"),
+            "람다가 함수 호출": (head + 'let g = fn(x) => call_it(x)\nroute POST "/p" public:\n    return g({})\n', "E306"),
+            "레코드 필드에 저장": (head + 'type Box:\n    f: Any\nlet box = Box(f=call_it)\n'
+                            'route POST "/p" public:\n    return box.f({})\n', "E306"),
+        }
+        for name, (src, code) in cases.items():
+            with self.subTest(name):
+                d, app, diags = build(src, toml)
+                try:
+                    self.assertIn(code, codes(diags), [x.render(app.sources) for x in diags])
+                finally:
+                    shutil.rmtree(d)
+
+    def test_indirect_ai_call_warns_on_public_route(self):
+        toml = '[permissions]\nnet = ["api.anthropic.com"]\n[ai]\nmock = true\n'
+        src = ('use std.ai\ntype T:\n    a: Str(1, 5)\nfn ask(x: Str) -> T:\n    return ai.extract(T, x)\n'
+               'let f = ask\nroute GET "/p" (q: Str(1, 10)) public:\n    return f(q)\n')
+        d, app, diags = build(src, toml)
+        try:
+            self.assertIn("W305", codes(diags))
+        finally:
+            shutil.rmtree(d)
+
+    def test_dynamic_calls_without_effectful_escapes_are_not_flagged(self):
+        """보수적 분석이지만, 값으로 빠져나간 함수에 워커 효과가 없으면 public 라우트를 막지 않는다."""
+        toml = '[permissions]\n[workers.m]\nurl = "http://127.0.0.1:9010/invoke"\ntimeout_ms = 500\n'
+        src = ('use std.worker\nfn double(x: Int) -> Int:\n    return x * 2\nlet ops = {d: double}\n'
+               'fn guarded_call() -> Json:\n    return worker.call("m", {})\n'
+               'route GET "/p" (n: Int(0, 10)) public:\n    return {v: ops["d"](n), w: map([1, 2], fn(x) => x + 1)}\n'
+               'route POST "/w" guard bearer:\n    return guarded_call()\n')
+        d, app, diags = build(src, toml)
+        try:
+            self.assertNotIn("E306", codes(diags), [x.render(app.sources) for x in diags])
+            self.assertFalse([x for x in diags if x.severity == "error"])
+        finally:
+            shutil.rmtree(d)
+
+    def test_tampered_ir_cannot_use_std_function_as_value(self):
+        from sori.lang.ir import validate
+        toml = '[permissions]\n[workers.m]\nurl = "http://127.0.0.1:9010/invoke"\ntimeout_ms = 500\n'
+        src = 'use std.worker\nroute POST "/p" guard bearer:\n    return worker.call("m", {})\n'
+        d, app, diags = build(src, toml)
+        try:
+            ir = json.loads(json.dumps(app.ir))
+            call = ir["routes"][0]["body"][0]["x"]
+            self.assertEqual(call["fn"]["op"], "std")
+            ir["routes"][0]["body"][0]["x"] = call["fn"]  # 호출하지 않고 std 함수 자체를 반환하도록 변조
+            self.assertTrue(any("std" in p for p in validate(ir)))
+        finally:
+            shutil.rmtree(d)
+
     def test_worker_name_must_be_literal_and_declared(self):
         toml = '[permissions]\n[workers.m]\nurl = "http://127.0.0.1:9010/invoke"\n'
         for src in ('use std.worker\nlet n = "m"\nroute POST "/x" guard bearer:\n    return worker.call(n, {})\n',
@@ -166,6 +234,26 @@ class TypedIRv2(unittest.TestCase):
         app.ir["routes"][0]["body"].append({"op": "exec", "at": [0, 1, 1]})
         with self.assertRaises(SecurityError):
             app.load()
+
+    def test_tampered_ir_field_access_on_std_module_is_refused_at_runtime(self):
+        """구조상 유효한 IR 이라도 std 모듈을 field 로 꺼내 쓰면 런타임이 거부한다 (심층 방어)."""
+        import os
+        from sori.framework.app import build_app
+        from sori.framework.web import dispatch
+        os.environ["SORI_API_TOKEN"] = "t" * 40
+        app, _ = build_app(ROOT / "examples" / "secure-api")
+        app.access_log = False
+        self.assertEqual(app.startup_problems("serve"), [])
+        route = next(r for r in app.ir["routes"] if r["path"] == "/risk")
+        call = route["body"][0]["x"]
+        self.assertEqual(call["fn"]["op"], "std")
+        call["fn"] = {"op": "field", "t": "Dyn", "at": call["fn"]["at"], "obj": call["fn"]["obj"], "name": "call"}
+        app.load()
+        status, _, body = dispatch(app, "POST", "/risk", {"host": "localhost", "content-type": "application/json",
+                                                           "authorization": "Bearer " + "t" * 40},
+                                   b'{"signal": 0.5}', "127.0.0.1")
+        self.assertEqual(status, 403, body)  # SecurityError → 403 (SORI-R200), 워커 호출까지 가지 않음
+        self.assertIn(b"SORI-R200", body)
 
     def test_schema_document_in_sync(self):
         on_disk = json.loads((ROOT / "docs" / "ir-v2.schema.json").read_text(encoding="utf-8"))

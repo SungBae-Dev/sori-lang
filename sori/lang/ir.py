@@ -64,7 +64,7 @@ class _V:
         if ("lo" in t) != ("hi" in t):
             self.bad(path, "범위는 lo/hi 둘 다 있어야 해요")
 
-    def expr(self, n, path, depth=0):
+    def expr(self, n, path, depth=0, callee=False):
         if depth > 200:
             return self.bad(path, "식이 너무 깊어요")
         if not isinstance(n, dict) or n.get("op") not in EXPR_FIELDS:
@@ -85,6 +85,8 @@ class _V:
             self.bad(path, "logic.o 오류")
         if op == "unop" and n.get("o") not in ("-", "+"):
             self.bad(path, "unop.o 오류")
+        if op == "std" and not callee:
+            self.bad(path, "std 함수는 호출 위치(call.fn)에만 올 수 있어요 — 값으로 저장·전달 불가")
         if op in ("field", "std") and (not isinstance(n.get("name"), str) or n["name"].startswith("_")):
             self.bad(path, "'_' 로 시작하는 속성은 IR 에 있을 수 없어요")
         if op == "html" and any(c not in HTML_CTX for c in n.get("ctx", [])):
@@ -95,7 +97,7 @@ class _V:
             self.bad(path, "lit 은 스칼라만")
         for key in ("obj", "index", "l", "r", "x", "c", "then", "orelse", "fn", "body"):
             if isinstance(n.get(key), dict):
-                self.expr(n[key], f"{path}.{key}", depth + 1)
+                self.expr(n[key], f"{path}.{key}", depth + 1, callee=(op == "call" and key == "fn"))
         for key in ("items", "args", "rs"):
             for i, x in enumerate(n.get(key, []) or []):
                 self.expr(x, f"{path}.{key}[{i}]", depth + 1)
