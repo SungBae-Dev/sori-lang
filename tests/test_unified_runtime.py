@@ -301,7 +301,8 @@ class FailClosed(unittest.TestCase):
             app.env = "production"
             self.assertEqual(app.startup_problems("serve", server="uvicorn"), [])
             for rel, content in (("static/app.js", "steal()\n"), ("content/a.txt", "changed\n")):
-                orig = open(os.path.join(d, rel)).read()
+                with open(os.path.join(d, rel), encoding="utf-8") as fh:
+                    orig = fh.read()
                 with open(os.path.join(d, rel), "w") as f:
                     f.write(content)
                 probs = " / ".join(app.startup_problems("serve", server="uvicorn"))

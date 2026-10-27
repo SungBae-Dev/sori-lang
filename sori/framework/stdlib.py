@@ -13,6 +13,7 @@ import sqlite3
 import ssl
 import sys
 import threading
+import weakref
 import time as _time
 import urllib.parse
 import urllib.request
@@ -93,6 +94,25 @@ class DB:
             os.makedirs(os.path.dirname(p), exist_ok=True)
             self._dsn, self._uri = p, False
         self._local = threading.local()
+        # 스레드별 연결을 모두 기억해 두었다가 DB 객체가 사라질 때(또는 close) 닫는다 — 미종료 연결 경고/누수 방지
+        self._all, self._all_lock = [], threading.Lock()
+        keeper = getattr(self, "_keeper", None)
+        self._finalizer = weakref.finalize(self, DB._close_all, self._all, self._all_lock, keeper)
+
+    @staticmethod
+    def _close_all(conns, lock, keeper):
+        with lock:
+            for c in conns:
+                try:
+                    c.close()
+                except sqlite3.Error:
+                    pass
+            conns.clear()
+        if keeper is not None:
+            keeper.close()
+
+    def close(self):
+        self._finalizer()
 
     def _conn(self):
         c = getattr(self._local, "c", None)
@@ -101,6 +121,8 @@ class DB:
             c.row_factory = sqlite3.Row
             c.execute("PRAGMA foreign_keys=ON")
             self._local.c = c
+            with self._all_lock:
+                self._all.append(c)
         return c
 
     @staticmethod
